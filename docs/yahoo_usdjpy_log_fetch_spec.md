@@ -14,6 +14,7 @@
 - 停止: 停止ボタンで中断
 - 保存先: `logs`
 - 保存形式: `usdjpy_{part}_YYYYMMDD.jsonl`（1行が1件の形式）で保存
+- 入力内容: 自動で保存され、次回起動時に復元
 
 起動方法:
 - `python app/app.py`

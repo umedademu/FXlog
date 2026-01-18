@@ -24,6 +24,7 @@ MISSING_YEAR_DEFAULT = 2026
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
+SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 SLEEP_MIN_DEFAULT = 0.3
 SLEEP_MAX_DEFAULT = 0.6
 EXTRA_SLEEP_MIN_DEFAULT = 5
@@ -436,6 +437,8 @@ class App:
         self.extra2_sleep_min_var = tk.StringVar(value=str(EXTRA2_SLEEP_MIN_DEFAULT))
         self.extra2_sleep_max_var = tk.StringVar(value=str(EXTRA2_SLEEP_MAX_DEFAULT))
 
+        self.load_settings()
+
         frm = ttk.Frame(root, padding=10)
         frm.grid(sticky="nsew")
 
@@ -483,6 +486,7 @@ class App:
         frm.rowconfigure(3, weight=1)
 
         self.root.after(200, self.flush_log)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def log(self, message):
         prefix = ""
@@ -508,6 +512,68 @@ class App:
         except Exception:
             base = date.today()
         CalendarDialog(self.root, target_var, base)
+
+    def load_settings(self):
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+
+        def set_text(var, key):
+            value = data.get(key)
+            if value is None:
+                return
+            var.set(str(value))
+
+        def set_flag(var, key):
+            value = data.get(key)
+            if value is None:
+                return
+            var.set(bool(value))
+
+        set_text(self.start_part_var, "start_part")
+        set_text(self.end_part_var, "end_part")
+        set_text(self.missing_year_var, "missing_year")
+        set_text(self.sleep_min_var, "sleep_min")
+        set_text(self.sleep_max_var, "sleep_max")
+        set_flag(self.extra_enabled, "extra_enabled")
+        set_text(self.extra_pages_var, "extra_pages")
+        set_text(self.extra_sleep_min_var, "extra_sleep_min")
+        set_text(self.extra_sleep_max_var, "extra_sleep_max")
+        set_flag(self.extra2_enabled, "extra2_enabled")
+        set_text(self.extra2_pages_var, "extra2_pages")
+        set_text(self.extra2_sleep_min_var, "extra2_sleep_min")
+        set_text(self.extra2_sleep_max_var, "extra2_sleep_max")
+
+    def save_settings(self):
+        data = {
+            "start_part": self.start_part_var.get().strip(),
+            "end_part": self.end_part_var.get().strip(),
+            "missing_year": self.missing_year_var.get().strip(),
+            "sleep_min": self.sleep_min_var.get().strip(),
+            "sleep_max": self.sleep_max_var.get().strip(),
+            "extra_enabled": bool(self.extra_enabled.get()),
+            "extra_pages": self.extra_pages_var.get().strip(),
+            "extra_sleep_min": self.extra_sleep_min_var.get().strip(),
+            "extra_sleep_max": self.extra_sleep_max_var.get().strip(),
+            "extra2_enabled": bool(self.extra2_enabled.get()),
+            "extra2_pages": self.extra2_pages_var.get().strip(),
+            "extra2_sleep_min": self.extra2_sleep_min_var.get().strip(),
+            "extra2_sleep_max": self.extra2_sleep_max_var.get().strip(),
+        }
+        try:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=True, indent=2)
+        except OSError:
+            pass
+
+    def on_close(self):
+        self.save_settings()
+        self.stop_event.set()
+        self.root.destroy()
 
     def start(self):
         if self.worker and self.worker.is_alive():
@@ -574,6 +640,7 @@ class App:
             extra2_sleep_min = 0.0
             extra2_sleep_max = 0.0
 
+        self.save_settings()
         self.stop_event.clear()
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
