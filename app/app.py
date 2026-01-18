@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from html.parser import HTMLParser
 import tkinter as tk
 from tkinter import ttk
@@ -18,8 +18,9 @@ LISTVIEW_URL = "https://finance.yahoo.co.jp/cm/ds/comment/listview"
 THREAD_URL = "https://finance.yahoo.co.jp/cm/message/552023129/usdjpy/{part}"
 THREAD_NAME_ENC = "%E3%82%A2%E3%83%A1%E3%83%AA%E3%82%AB%20%E3%83%89%E3%83%AB%20%2F%20%E6%97%A5%E6%9C%AC%20%E5%86%86%E3%80%90usdjpy%E3%80%91"
 
-BASE_DATE = date(2026, 1, 16)
-BASE_PART = 3291
+PART_START_DEFAULT = 3291
+PART_END_DEFAULT = 3291
+MISSING_YEAR_DEFAULT = 2026
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
@@ -301,13 +302,39 @@ def parse_date(text):
     raise ValueError("date format error")
 
 
-def date_to_part(day):
-    diff = (day - BASE_DATE).days
-    return BASE_PART + diff
+def parse_posted_date(text, missing_year):
+    if not text:
+        return None
+    m = re.search(r"(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})日", text)
+    if not m:
+        return None
+    year_text, month_text, day_text = m.groups()
+    year = int(year_text) if year_text else missing_year
+    try:
+        return date(year, int(month_text), int(day_text))
+    except ValueError:
+        return None
 
 
-def build_log_path(day):
-    return os.path.join(LOG_DIR, f"usdjpy_{day.strftime('%Y%m%d')}.jsonl")
+def determine_file_date(comments, missing_year):
+    if not comments:
+        return None
+    oldest = min(comments, key=lambda x: x.get("comment_no", 0) or 0)
+    target = parse_posted_date(oldest.get("posted_at", ""), missing_year)
+    if target:
+        return target
+    candidates = []
+    for item in comments:
+        parsed = parse_posted_date(item.get("posted_at", ""), missing_year)
+        if parsed:
+            candidates.append(parsed)
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def build_log_path(part, day):
+    return os.path.join(LOG_DIR, f"usdjpy_{part}_{day.strftime('%Y%m%d')}.jsonl")
 
 
 class CalendarDialog(tk.Toplevel):
@@ -393,10 +420,11 @@ class App:
         self.queue = queue.Queue()
         self.worker = None
         self.stop_event = threading.Event()
-        self.current_day = None
+        self.current_label = None
 
-        self.start_var = tk.StringVar(value="2026-01-16")
-        self.end_var = tk.StringVar(value="2026-01-16")
+        self.start_part_var = tk.StringVar(value=str(PART_START_DEFAULT))
+        self.end_part_var = tk.StringVar(value=str(PART_END_DEFAULT))
+        self.missing_year_var = tk.StringVar(value=str(MISSING_YEAR_DEFAULT))
         self.sleep_min_var = tk.StringVar(value=str(SLEEP_MIN_DEFAULT))
         self.sleep_max_var = tk.StringVar(value=str(SLEEP_MAX_DEFAULT))
         self.extra_enabled = tk.BooleanVar(value=False)
@@ -411,36 +439,21 @@ class App:
         frm = ttk.Frame(root, padding=10)
         frm.grid(sticky="nsew")
 
-        ttk.Label(frm, text="開始日").grid(row=0, column=0, sticky="w")
-        start_frame = ttk.Frame(frm)
-        start_frame.grid(row=0, column=1, sticky="w", padx=(5, 15))
-        ttk.Entry(start_frame, textvariable=self.start_var, width=12).grid(row=0, column=0, sticky="w")
-        ttk.Button(start_frame, text="選択", command=lambda: self.open_calendar(self.start_var)).grid(
-            row=0,
-            column=1,
-            sticky="w",
-            padx=(5, 0),
-        )
-
-        ttk.Label(frm, text="終了日").grid(row=0, column=2, sticky="w")
-        end_frame = ttk.Frame(frm)
-        end_frame.grid(row=0, column=3, sticky="w", padx=(5, 15))
-        ttk.Entry(end_frame, textvariable=self.end_var, width=12).grid(row=0, column=0, sticky="w")
-        ttk.Button(end_frame, text="選択", command=lambda: self.open_calendar(self.end_var)).grid(
-            row=0,
-            column=1,
-            sticky="w",
-            padx=(5, 0),
-        )
-        ttk.Label(frm, text="待ち時間(秒)").grid(row=0, column=4, sticky="w")
-        ttk.Entry(frm, textvariable=self.sleep_min_var, width=6).grid(row=0, column=5, sticky="w", padx=(5, 5))
-        ttk.Label(frm, text="〜").grid(row=0, column=6, sticky="w")
-        ttk.Entry(frm, textvariable=self.sleep_max_var, width=6).grid(row=0, column=7, sticky="w", padx=(5, 15))
+        ttk.Label(frm, text="開始番号").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.start_part_var, width=8).grid(row=0, column=1, sticky="w", padx=(5, 15))
+        ttk.Label(frm, text="終了番号").grid(row=0, column=2, sticky="w")
+        ttk.Entry(frm, textvariable=self.end_part_var, width=8).grid(row=0, column=3, sticky="w", padx=(5, 15))
+        ttk.Label(frm, text="年なしの年").grid(row=0, column=4, sticky="w")
+        ttk.Entry(frm, textvariable=self.missing_year_var, width=6).grid(row=0, column=5, sticky="w", padx=(5, 15))
+        ttk.Label(frm, text="待ち時間(秒)").grid(row=0, column=6, sticky="w")
+        ttk.Entry(frm, textvariable=self.sleep_min_var, width=6).grid(row=0, column=7, sticky="w", padx=(5, 5))
+        ttk.Label(frm, text="〜").grid(row=0, column=8, sticky="w")
+        ttk.Entry(frm, textvariable=self.sleep_max_var, width=6).grid(row=0, column=9, sticky="w", padx=(5, 15))
 
         self.start_btn = ttk.Button(frm, text="開始", command=self.start)
-        self.start_btn.grid(row=0, column=8, sticky="w")
+        self.start_btn.grid(row=0, column=10, sticky="w")
         self.stop_btn = ttk.Button(frm, text="停止", command=self.stop, state="disabled")
-        self.stop_btn.grid(row=0, column=9, sticky="w", padx=(5, 0))
+        self.stop_btn.grid(row=0, column=11, sticky="w", padx=(5, 0))
 
         ttk.Checkbutton(frm, text="追加休止", variable=self.extra_enabled).grid(row=1, column=0, sticky="w")
         ttk.Label(frm, text="間隔(ページ)").grid(row=1, column=1, sticky="w")
@@ -459,23 +472,22 @@ class App:
         ttk.Entry(frm, textvariable=self.extra2_sleep_max_var, width=6).grid(row=2, column=6, sticky="w", padx=(5, 15))
 
         self.text = tk.Text(frm, width=80, height=24)
-        self.text.grid(row=3, column=0, columnspan=10, pady=(10, 0), sticky="nsew")
+        self.text.grid(row=3, column=0, columnspan=12, pady=(10, 0), sticky="nsew")
         self.text.configure(state="disabled")
 
         scroll = ttk.Scrollbar(frm, command=self.text.yview)
-        scroll.grid(row=3, column=10, sticky="ns")
+        scroll.grid(row=3, column=12, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
-        frm.columnconfigure(9, weight=1)
+        frm.columnconfigure(11, weight=1)
         frm.rowconfigure(3, weight=1)
 
         self.root.after(200, self.flush_log)
 
     def log(self, message):
         prefix = ""
-        if self.current_day:
-            day = self.current_day
-            prefix = f"[{day.year}年{day.month}月{day.day}日] "
+        if self.current_label:
+            prefix = f"[{self.current_label}] "
         self.queue.put(prefix + message)
 
     def flush_log(self):
@@ -501,13 +513,19 @@ class App:
         if self.worker and self.worker.is_alive():
             return
         try:
-            start_day = parse_date(self.start_var.get())
-            end_day = parse_date(self.end_var.get())
+            start_part = int(self.start_part_var.get().strip())
+            end_part = int(self.end_part_var.get().strip())
+            if start_part <= 0 or end_part <= 0:
+                raise ValueError
         except ValueError:
-            self.log("日付の書き方が正しくありません")
+            self.log("開始番号と終了番号は1以上の数字で入力してください")
             return
-        if start_day > end_day:
-            self.log("開始日と終了日を入れ替えてください")
+        try:
+            missing_year = int(self.missing_year_var.get().strip())
+            if missing_year < 1900 or missing_year > 2100:
+                raise ValueError
+        except ValueError:
+            self.log("年なしの年は西暦で入力してください")
             return
         try:
             sleep_min = float(self.sleep_min_var.get().strip())
@@ -562,8 +580,9 @@ class App:
         self.worker = threading.Thread(
             target=self.run,
             args=(
-                start_day,
-                end_day,
+                start_part,
+                end_part,
+                missing_year,
                 sleep_min,
                 sleep_max,
                 extra_pages,
@@ -591,8 +610,9 @@ class App:
 
     def run(
         self,
-        start_day,
-        end_day,
+        start_part,
+        end_part,
+        missing_year,
         sleep_min,
         sleep_max,
         extra_pages,
@@ -602,50 +622,59 @@ class App:
         extra2_sleep_min,
         extra2_sleep_max,
     ):
-        total_days = (end_day - start_day).days + 1
-        self.current_day = start_day
-        self.log(f"期間: {start_day} 〜 {end_day} ({total_days}日)")
-        self.log(f"待ち時間: {sleep_min}〜{sleep_max}秒")
+        total_parts = abs(end_part - start_part) + 1
+        self.current_label = None
+        self.log(f"番号: {start_part} ～ {end_part} ({total_parts}件)")
+        self.log(f"年なしの年: {missing_year}年")
+        self.log(f"待ち時間: {sleep_min}～{sleep_max}秒")
         if extra_pages > 0:
-            self.log(f"追加休止: {extra_pages}ページごとに{extra_sleep_min}〜{extra_sleep_max}秒")
+            self.log(f"追加休止: {extra_pages}ページごとに{extra_sleep_min}～{extra_sleep_max}秒")
         if extra2_pages > 0:
-            self.log(f"追加休止2: {extra2_pages}ページごとに{extra2_sleep_min}〜{extra2_sleep_max}秒")
+            self.log(f"追加休止2: {extra2_pages}ページごとに{extra2_sleep_min}～{extra2_sleep_max}秒")
 
-        day = start_day
-        while day <= end_day:
-            self.current_day = day
+        step = 1 if end_part >= start_part else -1
+        part = start_part
+        while True:
+            self.current_label = f"part={part}"
             if self.stop_event.is_set():
                 self.log("停止しました")
                 break
-            part = date_to_part(day)
             if part <= 0:
-                self.log(f"対象外: {day} part={part}")
-                day += timedelta(days=1)
-                continue
-            self.log(f"対象日: {day} の取得中")
-            try:
-                comments = collect_comments(
-                    part,
-                    self.stop_event,
-                    self.log,
-                    sleep_min,
-                    sleep_max,
-                    extra_pages > 0,
-                    extra_pages,
-                    extra_sleep_min,
-                    extra_sleep_max,
-                    extra2_pages > 0,
-                    extra2_pages,
-                    extra2_sleep_min,
-                    extra2_sleep_max,
-                )
-                path = build_log_path(day)
-                save_jsonl(path, comments)
-                self.log(f"保存: {path} 件数={len(comments)}")
-            except Exception as exc:
-                self.log(f"失敗: {day} {exc}")
-            day += timedelta(days=1)
-        self.current_day = None
+                self.log(f"対象外: part={part}")
+            else:
+                self.log(f"対象番号: {part} の取得中")
+                try:
+                    comments = collect_comments(
+                        part,
+                        self.stop_event,
+                        self.log,
+                        sleep_min,
+                        sleep_max,
+                        extra_pages > 0,
+                        extra_pages,
+                        extra_sleep_min,
+                        extra_sleep_max,
+                        extra2_pages > 0,
+                        extra2_pages,
+                        extra2_sleep_min,
+                        extra2_sleep_max,
+                    )
+                    file_day = determine_file_date(comments, missing_year)
+                    if not file_day:
+                        self.log("日付が取れないため保存を中止しました")
+                    else:
+                        self.current_label = f"{file_day.year}年{file_day.month}月{file_day.day}日 part={part}"
+                        path = build_log_path(part, file_day)
+                        save_jsonl(path, comments)
+                        self.log(f"保存: {path} 件数={len(comments)}")
+                except Exception as exc:
+                    self.log(f"失敗: part={part} {exc}")
+
+            if part == end_part:
+                break
+            part += step
+        self.current_label = None
+
 
 
 def main():
