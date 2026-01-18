@@ -1,3 +1,4 @@
+import calendar
 import json
 import os
 import queue
@@ -309,6 +310,82 @@ def build_log_path(day):
     return os.path.join(LOG_DIR, f"usdjpy_{day.strftime('%Y%m%d')}.jsonl")
 
 
+class CalendarDialog(tk.Toplevel):
+    def __init__(self, parent, target_var, initial_date):
+        super().__init__(parent)
+        self.target_var = target_var
+        self.year = initial_date.year
+        self.month = initial_date.month
+        self.cal = calendar.Calendar(firstweekday=6)
+
+        self.title("日付選択")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        header = ttk.Frame(self, padding=(10, 10, 10, 0))
+        header.grid(row=0, column=0, sticky="ew")
+        self.prev_btn = ttk.Button(header, text="前月", width=6, command=self.prev_month)
+        self.prev_btn.grid(row=0, column=0, sticky="w")
+        self.month_label = ttk.Label(header, text="")
+        self.month_label.grid(row=0, column=1, padx=10)
+        self.next_btn = ttk.Button(header, text="翌月", width=6, command=self.next_month)
+        self.next_btn.grid(row=0, column=2, sticky="e")
+
+        self.days_frame = ttk.Frame(self, padding=10)
+        self.days_frame.grid(row=1, column=0)
+        self.build_days()
+
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def build_days(self):
+        for child in self.days_frame.winfo_children():
+            child.destroy()
+
+        self.month_label.configure(text=f"{self.year}年{self.month}月")
+        weekdays = ["日", "月", "火", "水", "木", "金", "土"]
+        for idx, label in enumerate(weekdays):
+            ttk.Label(self.days_frame, text=label).grid(row=0, column=idx, padx=4, pady=2)
+
+        weeks = self.cal.monthdayscalendar(self.year, self.month)
+        for row_idx, week in enumerate(weeks, start=1):
+            for col_idx, day_num in enumerate(week):
+                if day_num == 0:
+                    ttk.Label(self.days_frame, text=" ").grid(row=row_idx, column=col_idx, padx=2, pady=2)
+                    continue
+                btn = ttk.Button(
+                    self.days_frame,
+                    text=str(day_num),
+                    width=3,
+                    command=lambda d=day_num: self.select_day(d),
+                )
+                btn.grid(row=row_idx, column=col_idx, padx=2, pady=2)
+
+    def select_day(self, day_num):
+        self.target_var.set(f"{self.year:04d}-{self.month:02d}-{day_num:02d}")
+        self.close()
+
+    def prev_month(self):
+        if self.month == 1:
+            self.month = 12
+            self.year -= 1
+        else:
+            self.month -= 1
+        self.build_days()
+
+    def next_month(self):
+        if self.month == 12:
+            self.month = 1
+            self.year += 1
+        else:
+            self.month += 1
+        self.build_days()
+
+    def close(self):
+        self.grab_release()
+        self.destroy()
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -316,6 +393,7 @@ class App:
         self.queue = queue.Queue()
         self.worker = None
         self.stop_event = threading.Event()
+        self.current_day = None
 
         self.start_var = tk.StringVar(value="2026-01-16")
         self.end_var = tk.StringVar(value="2026-01-16")
@@ -334,9 +412,26 @@ class App:
         frm.grid(sticky="nsew")
 
         ttk.Label(frm, text="開始日").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.start_var, width=16).grid(row=0, column=1, sticky="w", padx=(5, 15))
+        start_frame = ttk.Frame(frm)
+        start_frame.grid(row=0, column=1, sticky="w", padx=(5, 15))
+        ttk.Entry(start_frame, textvariable=self.start_var, width=12).grid(row=0, column=0, sticky="w")
+        ttk.Button(start_frame, text="選択", command=lambda: self.open_calendar(self.start_var)).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(5, 0),
+        )
+
         ttk.Label(frm, text="終了日").grid(row=0, column=2, sticky="w")
-        ttk.Entry(frm, textvariable=self.end_var, width=16).grid(row=0, column=3, sticky="w", padx=(5, 15))
+        end_frame = ttk.Frame(frm)
+        end_frame.grid(row=0, column=3, sticky="w", padx=(5, 15))
+        ttk.Entry(end_frame, textvariable=self.end_var, width=12).grid(row=0, column=0, sticky="w")
+        ttk.Button(end_frame, text="選択", command=lambda: self.open_calendar(self.end_var)).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(5, 0),
+        )
         ttk.Label(frm, text="待ち時間(秒)").grid(row=0, column=4, sticky="w")
         ttk.Entry(frm, textvariable=self.sleep_min_var, width=6).grid(row=0, column=5, sticky="w", padx=(5, 5))
         ttk.Label(frm, text="〜").grid(row=0, column=6, sticky="w")
@@ -377,7 +472,11 @@ class App:
         self.root.after(200, self.flush_log)
 
     def log(self, message):
-        self.queue.put(message)
+        prefix = ""
+        if self.current_day:
+            day = self.current_day
+            prefix = f"[{day.year}年{day.month}月{day.day}日] "
+        self.queue.put(prefix + message)
 
     def flush_log(self):
         while True:
@@ -387,9 +486,16 @@ class App:
                 break
             self.text.configure(state="normal")
             self.text.insert("end", msg + "\n")
-            self.text.see("end")
-            self.text.configure(state="disabled")
+        self.text.configure(state="disabled")
+        self.text.see("end")
         self.root.after(200, self.flush_log)
+
+    def open_calendar(self, target_var):
+        try:
+            base = parse_date(target_var.get())
+        except Exception:
+            base = date.today()
+        CalendarDialog(self.root, target_var, base)
 
     def start(self):
         if self.worker and self.worker.is_alive():
@@ -497,6 +603,7 @@ class App:
         extra2_sleep_max,
     ):
         total_days = (end_day - start_day).days + 1
+        self.current_day = start_day
         self.log(f"期間: {start_day} 〜 {end_day} ({total_days}日)")
         self.log(f"待ち時間: {sleep_min}〜{sleep_max}秒")
         if extra_pages > 0:
@@ -506,6 +613,7 @@ class App:
 
         day = start_day
         while day <= end_day:
+            self.current_day = day
             if self.stop_event.is_set():
                 self.log("停止しました")
                 break
@@ -537,6 +645,7 @@ class App:
             except Exception as exc:
                 self.log(f"失敗: {day} {exc}")
             day += timedelta(days=1)
+        self.current_day = None
 
 
 def main():
