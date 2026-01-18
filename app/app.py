@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import random
 import re
 import threading
 import time
@@ -21,7 +22,14 @@ BASE_PART = 3291
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
-SLEEP_SEC = 0.5
+SLEEP_MIN_DEFAULT = 0.3
+SLEEP_MAX_DEFAULT = 0.6
+EXTRA_SLEEP_MIN_DEFAULT = 5
+EXTRA_SLEEP_MAX_DEFAULT = 15
+EXTRA2_SLEEP_MIN_DEFAULT = 15
+EXTRA2_SLEEP_MAX_DEFAULT = 30
+EXTRA_PAGES_DEFAULT = 50
+EXTRA2_PAGES_DEFAULT = 200
 
 
 class CommentParser(HTMLParser):
@@ -186,17 +194,26 @@ def fetch_page(part, offset, page):
     return data.get("feed", {}).get("content", "")
 
 
+def pick_sleep(min_sec, max_sec):
+    if max_sec <= min_sec:
+        return min_sec
+    return random.uniform(min_sec, max_sec)
+
+
 def collect_comments(
     part,
     stop_event,
     log_fn,
-    sleep_sec,
+    sleep_min,
+    sleep_max,
     extra_enabled,
     extra_pages,
-    extra_sleep_sec,
+    extra_sleep_min,
+    extra_sleep_max,
     extra2_enabled,
     extra2_pages,
-    extra2_sleep_sec,
+    extra2_sleep_min,
+    extra2_sleep_max,
 ):
     latest = get_latest_comment_no(part)
     page = 2
@@ -250,13 +267,15 @@ def collect_comments(
         offset = min_no - 1
         page += 1
         pages_fetched += 1
-        time.sleep(sleep_sec)
+        time.sleep(pick_sleep(sleep_min, sleep_max))
         if extra_enabled and extra_pages > 0 and pages_fetched % extra_pages == 0:
-            log_fn(f"追加休止: {extra_sleep_sec}秒")
-            time.sleep(extra_sleep_sec)
+            extra_sleep = pick_sleep(extra_sleep_min, extra_sleep_max)
+            log_fn(f"追加休止: {extra_sleep:.2f}秒")
+            time.sleep(extra_sleep)
         if extra2_enabled and extra2_pages > 0 and pages_fetched % extra2_pages == 0:
-            log_fn(f"追加休止2: {extra2_sleep_sec}秒")
-            time.sleep(extra2_sleep_sec)
+            extra2_sleep = pick_sleep(extra2_sleep_min, extra2_sleep_max)
+            log_fn(f"追加休止2: {extra2_sleep:.2f}秒")
+            time.sleep(extra2_sleep)
 
     return all_comments
 
@@ -300,13 +319,16 @@ class App:
 
         self.start_var = tk.StringVar(value="2026-01-16")
         self.end_var = tk.StringVar(value="2026-01-16")
-        self.sleep_var = tk.StringVar(value=str(SLEEP_SEC))
+        self.sleep_min_var = tk.StringVar(value=str(SLEEP_MIN_DEFAULT))
+        self.sleep_max_var = tk.StringVar(value=str(SLEEP_MAX_DEFAULT))
         self.extra_enabled = tk.BooleanVar(value=False)
-        self.extra_pages_var = tk.StringVar(value="50")
-        self.extra_sleep_var = tk.StringVar(value="10")
+        self.extra_pages_var = tk.StringVar(value=str(EXTRA_PAGES_DEFAULT))
+        self.extra_sleep_min_var = tk.StringVar(value=str(EXTRA_SLEEP_MIN_DEFAULT))
+        self.extra_sleep_max_var = tk.StringVar(value=str(EXTRA_SLEEP_MAX_DEFAULT))
         self.extra2_enabled = tk.BooleanVar(value=False)
-        self.extra2_pages_var = tk.StringVar(value="200")
-        self.extra2_sleep_var = tk.StringVar(value="60")
+        self.extra2_pages_var = tk.StringVar(value=str(EXTRA2_PAGES_DEFAULT))
+        self.extra2_sleep_min_var = tk.StringVar(value=str(EXTRA2_SLEEP_MIN_DEFAULT))
+        self.extra2_sleep_max_var = tk.StringVar(value=str(EXTRA2_SLEEP_MAX_DEFAULT))
 
         frm = ttk.Frame(root, padding=10)
         frm.grid(sticky="nsew")
@@ -316,34 +338,40 @@ class App:
         ttk.Label(frm, text="終了日").grid(row=0, column=2, sticky="w")
         ttk.Entry(frm, textvariable=self.end_var, width=16).grid(row=0, column=3, sticky="w", padx=(5, 15))
         ttk.Label(frm, text="待ち時間(秒)").grid(row=0, column=4, sticky="w")
-        ttk.Entry(frm, textvariable=self.sleep_var, width=8).grid(row=0, column=5, sticky="w", padx=(5, 15))
+        ttk.Entry(frm, textvariable=self.sleep_min_var, width=6).grid(row=0, column=5, sticky="w", padx=(5, 5))
+        ttk.Label(frm, text="〜").grid(row=0, column=6, sticky="w")
+        ttk.Entry(frm, textvariable=self.sleep_max_var, width=6).grid(row=0, column=7, sticky="w", padx=(5, 15))
 
         self.start_btn = ttk.Button(frm, text="開始", command=self.start)
-        self.start_btn.grid(row=0, column=6, sticky="w")
+        self.start_btn.grid(row=0, column=8, sticky="w")
         self.stop_btn = ttk.Button(frm, text="停止", command=self.stop, state="disabled")
-        self.stop_btn.grid(row=0, column=7, sticky="w", padx=(5, 0))
+        self.stop_btn.grid(row=0, column=9, sticky="w", padx=(5, 0))
 
         ttk.Checkbutton(frm, text="追加休止", variable=self.extra_enabled).grid(row=1, column=0, sticky="w")
         ttk.Label(frm, text="間隔(ページ)").grid(row=1, column=1, sticky="w")
         ttk.Entry(frm, textvariable=self.extra_pages_var, width=8).grid(row=1, column=2, sticky="w", padx=(5, 15))
         ttk.Label(frm, text="休止(秒)").grid(row=1, column=3, sticky="w")
-        ttk.Entry(frm, textvariable=self.extra_sleep_var, width=8).grid(row=1, column=4, sticky="w", padx=(5, 15))
+        ttk.Entry(frm, textvariable=self.extra_sleep_min_var, width=6).grid(row=1, column=4, sticky="w", padx=(5, 5))
+        ttk.Label(frm, text="〜").grid(row=1, column=5, sticky="w")
+        ttk.Entry(frm, textvariable=self.extra_sleep_max_var, width=6).grid(row=1, column=6, sticky="w", padx=(5, 15))
 
         ttk.Checkbutton(frm, text="追加休止2", variable=self.extra2_enabled).grid(row=2, column=0, sticky="w")
         ttk.Label(frm, text="間隔(ページ)").grid(row=2, column=1, sticky="w")
         ttk.Entry(frm, textvariable=self.extra2_pages_var, width=8).grid(row=2, column=2, sticky="w", padx=(5, 15))
         ttk.Label(frm, text="休止(秒)").grid(row=2, column=3, sticky="w")
-        ttk.Entry(frm, textvariable=self.extra2_sleep_var, width=8).grid(row=2, column=4, sticky="w", padx=(5, 15))
+        ttk.Entry(frm, textvariable=self.extra2_sleep_min_var, width=6).grid(row=2, column=4, sticky="w", padx=(5, 5))
+        ttk.Label(frm, text="〜").grid(row=2, column=5, sticky="w")
+        ttk.Entry(frm, textvariable=self.extra2_sleep_max_var, width=6).grid(row=2, column=6, sticky="w", padx=(5, 15))
 
         self.text = tk.Text(frm, width=80, height=24)
-        self.text.grid(row=3, column=0, columnspan=8, pady=(10, 0), sticky="nsew")
+        self.text.grid(row=3, column=0, columnspan=10, pady=(10, 0), sticky="nsew")
         self.text.configure(state="disabled")
 
         scroll = ttk.Scrollbar(frm, command=self.text.yview)
-        scroll.grid(row=3, column=8, sticky="ns")
+        scroll.grid(row=3, column=10, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
-        frm.columnconfigure(7, weight=1)
+        frm.columnconfigure(9, weight=1)
         frm.rowconfigure(3, weight=1)
 
         self.root.after(200, self.flush_log)
@@ -376,43 +404,69 @@ class App:
             self.log("開始日と終了日を入れ替えてください")
             return
         try:
-            sleep_sec = float(self.sleep_var.get().strip())
-            if sleep_sec < 0:
+            sleep_min = float(self.sleep_min_var.get().strip())
+            sleep_max = float(self.sleep_max_var.get().strip())
+            if sleep_min < 0 or sleep_max < 0 or sleep_min > sleep_max:
                 raise ValueError
         except ValueError:
-            self.log("待ち時間は0以上の数で入力してください")
+            self.log("待ち時間は0以上で、下限が上限以下になるように入力してください")
             return
         if self.extra_enabled.get():
             try:
                 extra_pages = int(self.extra_pages_var.get().strip())
-                extra_sleep_sec = float(self.extra_sleep_var.get().strip())
-                if extra_pages <= 0 or extra_sleep_sec < 0:
+                extra_sleep_min = float(self.extra_sleep_min_var.get().strip())
+                extra_sleep_max = float(self.extra_sleep_max_var.get().strip())
+                if (
+                    extra_pages <= 0
+                    or extra_sleep_min < 0
+                    or extra_sleep_max < 0
+                    or extra_sleep_min > extra_sleep_max
+                ):
                     raise ValueError
             except ValueError:
                 self.log("追加休止はページ数と秒数を正しく入力してください")
                 return
         else:
             extra_pages = 0
-            extra_sleep_sec = 0.0
+            extra_sleep_min = 0.0
+            extra_sleep_max = 0.0
         if self.extra2_enabled.get():
             try:
                 extra2_pages = int(self.extra2_pages_var.get().strip())
-                extra2_sleep_sec = float(self.extra2_sleep_var.get().strip())
-                if extra2_pages <= 0 or extra2_sleep_sec < 0:
+                extra2_sleep_min = float(self.extra2_sleep_min_var.get().strip())
+                extra2_sleep_max = float(self.extra2_sleep_max_var.get().strip())
+                if (
+                    extra2_pages <= 0
+                    or extra2_sleep_min < 0
+                    or extra2_sleep_max < 0
+                    or extra2_sleep_min > extra2_sleep_max
+                ):
                     raise ValueError
             except ValueError:
                 self.log("追加休止2はページ数と秒数を正しく入力してください")
                 return
         else:
             extra2_pages = 0
-            extra2_sleep_sec = 0.0
+            extra2_sleep_min = 0.0
+            extra2_sleep_max = 0.0
 
         self.stop_event.clear()
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.worker = threading.Thread(
             target=self.run,
-            args=(start_day, end_day, sleep_sec, extra_pages, extra_sleep_sec, extra2_pages, extra2_sleep_sec),
+            args=(
+                start_day,
+                end_day,
+                sleep_min,
+                sleep_max,
+                extra_pages,
+                extra_sleep_min,
+                extra_sleep_max,
+                extra2_pages,
+                extra2_sleep_min,
+                extra2_sleep_max,
+            ),
             daemon=True,
         )
         self.worker.start()
@@ -429,14 +483,26 @@ class App:
         self.stop_btn.configure(state="disabled")
         self.log("処理が終わりました")
 
-    def run(self, start_day, end_day, sleep_sec, extra_pages, extra_sleep_sec, extra2_pages, extra2_sleep_sec):
+    def run(
+        self,
+        start_day,
+        end_day,
+        sleep_min,
+        sleep_max,
+        extra_pages,
+        extra_sleep_min,
+        extra_sleep_max,
+        extra2_pages,
+        extra2_sleep_min,
+        extra2_sleep_max,
+    ):
         total_days = (end_day - start_day).days + 1
         self.log(f"期間: {start_day} 〜 {end_day} ({total_days}日)")
-        self.log(f"待ち時間: {sleep_sec}秒")
+        self.log(f"待ち時間: {sleep_min}〜{sleep_max}秒")
         if extra_pages > 0:
-            self.log(f"追加休止: {extra_pages}ページごとに{extra_sleep_sec}秒")
+            self.log(f"追加休止: {extra_pages}ページごとに{extra_sleep_min}〜{extra_sleep_max}秒")
         if extra2_pages > 0:
-            self.log(f"追加休止2: {extra2_pages}ページごとに{extra2_sleep_sec}秒")
+            self.log(f"追加休止2: {extra2_pages}ページごとに{extra2_sleep_min}〜{extra2_sleep_max}秒")
 
         day = start_day
         while day <= end_day:
@@ -448,18 +514,22 @@ class App:
                 self.log(f"対象外: {day} part={part}")
                 day += timedelta(days=1)
                 continue
+            self.log(f"対象日: {day} の取得中")
             try:
                 comments = collect_comments(
                     part,
                     self.stop_event,
                     self.log,
-                    sleep_sec,
+                    sleep_min,
+                    sleep_max,
                     extra_pages > 0,
                     extra_pages,
-                    extra_sleep_sec,
+                    extra_sleep_min,
+                    extra_sleep_max,
                     extra2_pages > 0,
                     extra2_pages,
-                    extra2_sleep_sec,
+                    extra2_sleep_min,
+                    extra2_sleep_max,
                 )
                 path = build_log_path(day)
                 save_jsonl(path, comments)
