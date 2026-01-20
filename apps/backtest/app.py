@@ -35,12 +35,14 @@ CHART_RIGHT_PAD = 80
 CHART_TOP_PAD = 8
 CHART_BOTTOM_PAD = 26
 MAX_DRAW_BARS = 1500
+EQUITY_HEIGHT = 260
 ZOOM_MIN = 0.5
 ZOOM_MAX = 3.0
 ZOOM_STEP = 0.1
 CHART_MIN_BAR_STEP = 5
 CHART_MAX_BAR_STEP = 20
 PIP_SIZE = 0.01
+EQUITY_POINT_RADIUS = 3
 
 
 def parse_datetime_text(text, is_end=False):
@@ -105,6 +107,10 @@ def format_axis_time(dt, show_date):
     if show_date:
         return dt.strftime("%m-%d %H:%M")
     return dt.strftime("%H:%M")
+
+
+def format_pips(value):
+    return f"{value:.2f}"
 
 
 def load_signals(csv_dir):
@@ -363,6 +369,7 @@ class BacktestApp:
         self.root.columnconfigure(0, weight=1)
         self.signals = []
         self.chart_data = None
+        self.equity_data = None
         self.zoom_var = tk.DoubleVar(value=1.5)
         self.zoom_text_var = tk.StringVar(value="")
 
@@ -373,7 +380,18 @@ class BacktestApp:
         self.spread_var = tk.StringVar(value="1")
         self.info_var = tk.StringVar(value="サイン件数: -")
 
-        top = ttk.Frame(root, padding=6)
+        self.notebook = ttk.Notebook(root)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        self.tab_chart = ttk.Frame(self.notebook)
+        self.tab_pnl = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_chart, text="チャート")
+        self.notebook.add(self.tab_pnl, text="損益")
+        self.tab_chart.rowconfigure(0, weight=1)
+        self.tab_chart.columnconfigure(0, weight=1)
+        self.tab_pnl.rowconfigure(1, weight=1)
+        self.tab_pnl.columnconfigure(0, weight=1)
+
+        top = ttk.Frame(self.tab_chart, padding=6)
         top.grid(sticky="nsew")
 
         ttk.Label(top, textvariable=self.info_var).grid(row=0, column=0, columnspan=6, sticky="w")
@@ -384,9 +402,11 @@ class BacktestApp:
             row=1, column=2, sticky="w", padx=(6, 0), pady=(8, 2)
         )
         ttk.Label(top, text="終了(日本時間)").grid(row=1, column=3, sticky="w", padx=(12, 0), pady=(8, 2))
-        ttk.Entry(top, textvariable=self.end_var, width=22).grid(row=1, column=4, sticky="w", pady=(8, 2))
-        ttk.Button(top, text="日付", command=lambda: self.open_calendar(self.end_var)).grid(
-            row=1, column=5, sticky="w", padx=(6, 0), pady=(8, 2)
+        end_frame = ttk.Frame(top)
+        end_frame.grid(row=1, column=4, sticky="w", pady=(8, 2))
+        ttk.Entry(end_frame, textvariable=self.end_var, width=22).grid(row=0, column=0, sticky="w")
+        ttk.Button(end_frame, text="日付", command=lambda: self.open_calendar(self.end_var)).grid(
+            row=0, column=1, sticky="w", padx=(6, 0)
         )
 
         ttk.Label(top, text="ストップ幅(0.01=1)").grid(row=2, column=0, sticky="w")
@@ -447,6 +467,36 @@ class BacktestApp:
         top.rowconfigure(5, weight=6)
         top.rowconfigure(6, weight=2)
 
+        stats = ttk.Frame(self.tab_pnl, padding=10)
+        stats.grid(row=0, column=0, sticky="ew")
+        stats.columnconfigure(1, weight=1)
+
+        self.total_pips_var = tk.StringVar(value="-")
+        self.max_dd_var = tk.StringVar(value="-")
+        self.trade_count_var = tk.StringVar(value="-")
+        self.win_rate_var = tk.StringVar(value="-")
+        self.pf_var = tk.StringVar(value="-")
+
+        ttk.Label(stats, text="総損益(pips)").grid(row=0, column=0, sticky="w")
+        ttk.Label(stats, textvariable=self.total_pips_var).grid(row=0, column=1, sticky="w", padx=(8, 20))
+        ttk.Label(stats, text="最大ドローダウン(pips)").grid(row=1, column=0, sticky="w")
+        ttk.Label(stats, textvariable=self.max_dd_var).grid(row=1, column=1, sticky="w", padx=(8, 20))
+        ttk.Label(stats, text="トレード総数").grid(row=2, column=0, sticky="w")
+        ttk.Label(stats, textvariable=self.trade_count_var).grid(row=2, column=1, sticky="w", padx=(8, 20))
+        ttk.Label(stats, text="勝ちトレード").grid(row=3, column=0, sticky="w")
+        ttk.Label(stats, textvariable=self.win_rate_var).grid(row=3, column=1, sticky="w", padx=(8, 20))
+        ttk.Label(stats, text="プロフィットファクター").grid(row=4, column=0, sticky="w")
+        ttk.Label(stats, textvariable=self.pf_var).grid(row=4, column=1, sticky="w", padx=(8, 20))
+
+        self.equity_chart = tk.Canvas(
+            self.tab_pnl,
+            background=CHART_BG,
+            highlightthickness=0,
+            height=EQUITY_HEIGHT,
+        )
+        self.equity_chart.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self.equity_chart.bind("<Configure>", self.on_equity_resize)
+
         self.update_zoom_label()
         self.reload_signals()
 
@@ -460,6 +510,13 @@ class BacktestApp:
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.configure(state="disabled")
+
+    def reset_stats(self):
+        self.total_pips_var.set("-")
+        self.max_dd_var.set("-")
+        self.trade_count_var.set("-")
+        self.win_rate_var.set("-")
+        self.pf_var.set("-")
 
     def reload_signals(self):
         self.signals, errors = load_signals(CSV_DIR)
@@ -534,6 +591,14 @@ class BacktestApp:
         self.chart.delete("all")
         self.chart.configure(scrollregion=(0, 0, 0, 0))
         self.chart_data = None
+
+    def clear_equity_chart(self):
+        self.equity_chart.delete("all")
+        self.equity_data = None
+
+    def on_equity_resize(self, event):
+        if self.equity_data is not None:
+            self.draw_equity_chart(self.equity_data)
 
     def on_canvas_resize(self, event):
         if self.chart_data:
@@ -704,9 +769,146 @@ class BacktestApp:
         self.chart.xview_moveto(xview[0])
         self.chart.yview_moveto(yview[0])
 
+    def draw_equity_chart(self, points):
+        self.equity_chart.delete("all")
+        self.equity_data = points
+        width = self.equity_chart.winfo_width()
+        height = self.equity_chart.winfo_height()
+        if width <= 1:
+            width = 900
+        if height <= 1:
+            height = EQUITY_HEIGHT
+
+        left = CHART_LEFT_PAD
+        right = CHART_RIGHT_PAD
+        top = CHART_TOP_PAD
+        bottom = CHART_BOTTOM_PAD
+        plot_w = max(1, width - left - right)
+        plot_h = max(1, height - top - bottom)
+
+        if not points:
+            self.equity_chart.create_text(
+                width / 2,
+                height / 2,
+                text="損益データなし",
+                fill=CHART_TEXT,
+            )
+            return
+
+        values = [p["value"] for p in points]
+        min_v = min(values)
+        max_v = max(values)
+        if max_v == min_v:
+            max_v += 1.0
+            min_v -= 1.0
+
+        def value_to_y(value):
+            return top + (max_v - value) / (max_v - min_v) * plot_h
+
+        count = len(points)
+        if count == 1:
+            step_x = 0
+        else:
+            step_x = plot_w / (count - 1)
+
+        def index_to_x(idx):
+            if count == 1:
+                return left + plot_w / 2
+            return left + idx * step_x
+
+        axis_x = width - 6
+        ticks = 6
+        for i in range(ticks):
+            value = min_v + (max_v - min_v) * i / (ticks - 1)
+            y = value_to_y(value)
+            self.equity_chart.create_line(left, y, width - right, y, fill=CHART_GRID)
+            self.equity_chart.create_text(axis_x, y, text=format_pips(value), anchor="e", fill=CHART_TEXT)
+        self.equity_chart.create_line(width - right, top, width - right, top + plot_h, fill=CHART_AXIS)
+
+        show_date = points[0]["time"].date() != points[-1]["time"].date()
+        time_ticks = min(6, count) if count > 1 else 1
+        for i in range(time_ticks):
+            idx = 0 if time_ticks == 1 else int((count - 1) * i / (time_ticks - 1))
+            x = index_to_x(idx)
+            label = format_axis_time(points[idx]["time"], show_date)
+            self.equity_chart.create_line(x, top, x, top + plot_h, fill=CHART_GRID)
+            self.equity_chart.create_text(x, top + plot_h + 8, text=label, anchor="n", fill=CHART_TEXT)
+
+        if min_v < 0 < max_v:
+            zero_y = value_to_y(0)
+            self.equity_chart.create_line(left, zero_y, width - right, zero_y, fill=CHART_AXIS, dash=(2, 2))
+
+        last_x = None
+        last_y = None
+        for idx, point in enumerate(points):
+            x = index_to_x(idx)
+            y = value_to_y(point["value"])
+            if last_x is not None:
+                self.equity_chart.create_line(last_x, last_y, x, y, fill=CHART_UP)
+            self.equity_chart.create_oval(
+                x - EQUITY_POINT_RADIUS,
+                y - EQUITY_POINT_RADIUS,
+                x + EQUITY_POINT_RADIUS,
+                y + EQUITY_POINT_RADIUS,
+                fill=CHART_UP,
+                outline=CHART_UP,
+            )
+            last_x = x
+            last_y = y
+
+        self.equity_chart.create_text(
+            left,
+            4,
+            text="損益の変動(pips)",
+            anchor="nw",
+            fill=CHART_TEXT,
+        )
+
+    def update_stats(self, results):
+        total = len(results)
+        self.trade_count_var.set(str(total))
+        if total == 0:
+            self.total_pips_var.set("0.00")
+            self.max_dd_var.set("0.00")
+            self.win_rate_var.set("0.00% 0/0")
+            self.pf_var.set("計算不可")
+            return
+
+        pips_list = [r["pnl"] / PIP_SIZE for r in results]
+        total_pips = sum(pips_list)
+        wins = sum(1 for p in pips_list if p > 0)
+        losses = sum(1 for p in pips_list if p < 0)
+        win_rate = wins / total * 100
+        win_text = f"{win_rate:.2f}% {wins}/{total}"
+
+        profit_sum = sum(p for p in pips_list if p > 0)
+        loss_sum = sum(p for p in pips_list if p < 0)
+        if loss_sum == 0:
+            pf_text = "計算不可"
+        else:
+            pf_text = f"{profit_sum / abs(loss_sum):.3f}"
+
+        equity = 0.0
+        max_dd = 0.0
+        peak = 0.0
+        for p in pips_list:
+            equity += p
+            if equity > peak:
+                peak = equity
+            dd = peak - equity
+            if dd > max_dd:
+                max_dd = dd
+
+        self.total_pips_var.set(format_pips(total_pips))
+        self.max_dd_var.set(format_pips(max_dd))
+        self.win_rate_var.set(win_text)
+        self.pf_var.set(pf_text)
+
     def run_backtest(self):
         self.clear_log()
         self.clear_chart()
+        self.clear_equity_chart()
+        self.reset_stats()
         if not self.signals:
             self.reload_signals()
         if not self.signals:
@@ -754,6 +956,8 @@ class BacktestApp:
 
         if not period_signals:
             self.draw_chart(bars, [])
+            self.draw_equity_chart([])
+            self.update_stats([])
             self.log("期間内のサインがありません")
             return
 
@@ -799,10 +1003,20 @@ class BacktestApp:
             self.log(f"足が無いサイン: {missing}")
 
         self.draw_chart(bars, results)
-
         if not results:
+            self.draw_equity_chart([])
+            self.update_stats([])
             self.log("約定できたサインがありません")
             return
+
+        results_sorted = sorted(results, key=lambda item: item["exit_time"])
+        equity = 0.0
+        equity_points = []
+        for item in results_sorted:
+            equity += item["pnl"] / PIP_SIZE
+            equity_points.append({"time": item["exit_time"] + JST_OFFSET, "value": equity})
+        self.draw_equity_chart(equity_points)
+        self.update_stats(results_sorted)
 
         total = len(results)
         wins = sum(1 for r in results if r["pnl"] > 0)
