@@ -669,6 +669,17 @@ class BacktestApp:
 
         index_by_time = {bar["time"]: idx for idx, bar in enumerate(bars)}
         for item in results:
+            entry_idx = index_by_time.get(item["entry_time"])
+            exit_idx = index_by_time.get(item["exit_time"])
+            if entry_idx is not None and exit_idx is not None:
+                x1 = index_to_x(entry_idx)
+                y1 = price_to_y(item["entry_price"])
+                x2 = index_to_x(exit_idx)
+                y2 = price_to_y(item["exit_price"])
+                line_color = CHART_UP if item["action"] == "BUY" else CHART_DOWN
+                self.chart.create_line(x1, y1, x2, y2, fill=line_color, dash=(4, 4))
+
+        for item in results:
             color = CHART_UP if item["action"] == "BUY" else CHART_DOWN
             entry_idx = index_by_time.get(item["entry_time"])
             if entry_idx is not None:
