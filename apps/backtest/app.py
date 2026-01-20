@@ -27,8 +27,13 @@ CHART_HEIGHT = 520
 CHART_BG = "#ffffff"
 CHART_GRID = "#e0e0e0"
 CHART_TEXT = "#333333"
+CHART_AXIS = "#666666"
 CHART_UP = "#2e7d32"
 CHART_DOWN = "#c62828"
+CHART_LEFT_PAD = 10
+CHART_RIGHT_PAD = 80
+CHART_TOP_PAD = 8
+CHART_BOTTOM_PAD = 26
 MAX_DRAW_BARS = 1500
 ZOOM_MIN = 0.5
 ZOOM_MAX = 3.0
@@ -397,7 +402,7 @@ class BacktestApp:
         ttk.Button(top, text="再読込", command=self.reload_signals).grid(row=3, column=3, sticky="w")
 
         chart_ctrl = ttk.Frame(top)
-        chart_ctrl.grid(row=4, column=0, columnspan=6, pady=(10, 0), sticky="ew")
+        chart_ctrl.grid(row=4, column=0, columnspan=6, pady=(4, 0), sticky="ew")
         ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
         self.zoom_scale = ttk.Scale(
             chart_ctrl,
@@ -413,7 +418,7 @@ class BacktestApp:
         chart_ctrl.columnconfigure(1, weight=1)
 
         self.chart_frame = ttk.Frame(top)
-        self.chart_frame.grid(row=5, column=0, columnspan=6, pady=(8, 0), sticky="nsew")
+        self.chart_frame.grid(row=5, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
         self.chart = tk.Canvas(
             self.chart_frame,
             background=CHART_BG,
@@ -559,10 +564,10 @@ class BacktestApp:
         if height <= 1:
             height = CHART_HEIGHT
 
-        left = 60
-        right = 20
-        top = 20
-        bottom = 40
+        left = CHART_LEFT_PAD
+        right = CHART_RIGHT_PAD
+        top = CHART_TOP_PAD
+        bottom = CHART_BOTTOM_PAD
         count = len(bars)
         zoom = float(self.zoom_var.get())
         bar_step = CHART_MIN_BAR_STEP * zoom
@@ -577,20 +582,26 @@ class BacktestApp:
         plot_h = max(1, content_h - top - bottom)
         self.chart.configure(scrollregion=(0, 0, content_w, content_h))
 
+        view_left = xview[0] * content_w
+        view_right = xview[1] * content_w
+        if view_right - view_left < 1:
+            view_left = 0
+            view_right = width
+
         visible_bars = bars
+        start_idx = 0
+        end_idx = count - 1
         if count > 1 and bar_step > 0:
-            visible_left = xview[0] * content_w
-            visible_right = xview[1] * content_w
-            start_idx = int((visible_left - left) / bar_step)
-            end_idx = int((visible_right - left) / bar_step) + 1
+            start_idx = int((view_left - left) / bar_step) - 2
+            end_idx = int((view_right - left) / bar_step) + 2
             if start_idx < 0:
                 start_idx = 0
-            if end_idx > count:
-                end_idx = count
-            if end_idx <= start_idx:
+            if end_idx >= count:
+                end_idx = count - 1
+            if end_idx < start_idx:
                 start_idx = 0
-                end_idx = count
-            visible_bars = bars[start_idx:end_idx]
+                end_idx = count - 1
+            visible_bars = bars[start_idx : end_idx + 1]
 
         min_p = min(bar["low"] for bar in visible_bars)
         max_p = max(bar["high"] for bar in visible_bars)
@@ -606,31 +617,35 @@ class BacktestApp:
                 return left + plot_w / 2
             return left + idx * bar_step
 
-        ticks = 5
+        axis_x = view_right - 6
+        grid_left = view_left + left
+        grid_right = view_right - right
+        if grid_right <= grid_left:
+            grid_right = view_right - 2
+
+        ticks = 6
         for i in range(ticks):
             price = min_p + (max_p - min_p) * i / (ticks - 1)
             y = price_to_y(price)
-            self.chart.create_line(left, y, content_w - right, y, fill=CHART_GRID)
-            self.chart.create_text(left - 6, y, text=format_price(price), anchor="e", fill=CHART_TEXT)
+            self.chart.create_line(grid_left, y, grid_right, y, fill=CHART_GRID)
+            self.chart.create_text(axis_x, y, text=format_price(price), anchor="e", fill=CHART_TEXT)
+        self.chart.create_line(grid_right, top, grid_right, top + plot_h, fill=CHART_AXIS)
 
         show_date = bars[0]["time"].date() != bars[-1]["time"].date()
-        time_ticks = min(5, count) if count > 1 else 1
+        visible_count = end_idx - start_idx + 1
+        time_ticks = min(6, visible_count) if visible_count > 1 else 1
         for i in range(time_ticks):
-            idx = 0 if time_ticks == 1 else int((count - 1) * i / (time_ticks - 1))
+            idx = start_idx if time_ticks == 1 else int(start_idx + (visible_count - 1) * i / (time_ticks - 1))
             x = index_to_x(idx)
             bar_time_jst = bars[idx]["time"] + JST_OFFSET
             label = format_axis_time(bar_time_jst, show_date)
-            self.chart.create_line(x, top, x, content_h - bottom, fill=CHART_GRID)
-            self.chart.create_text(x, content_h - bottom + 12, text=label, anchor="n", fill=CHART_TEXT)
+            self.chart.create_line(x, top, x, top + plot_h, fill=CHART_GRID)
+            self.chart.create_text(x, top + plot_h + 8, text=label, anchor="n", fill=CHART_TEXT)
 
         body_w = max(1, bar_step * 0.6)
         if body_w > 12:
             body_w = 12
-        stride = (count + MAX_DRAW_BARS - 1) // MAX_DRAW_BARS
-        if stride < 1:
-            stride = 1
-
-        for idx in range(0, count, stride):
+        for idx in range(start_idx, end_idx + 1):
             bar = bars[idx]
             x = index_to_x(idx)
             y_high = price_to_y(bar["high"])
@@ -669,8 +684,8 @@ class BacktestApp:
                 self.draw_arrow(x, y, direction, color)
 
         self.chart.create_text(
-            left,
-            6,
+            grid_left,
+            4,
             text="買い=上矢印 / 売り=下矢印 / クローズ=逆矢印",
             anchor="nw",
             fill=CHART_TEXT,
