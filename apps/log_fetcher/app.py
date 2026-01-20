@@ -22,7 +22,7 @@ PART_START_DEFAULT = 3291
 PART_END_DEFAULT = 3291
 MISSING_YEAR_DEFAULT = 2026
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 SLEEP_MIN_DEFAULT = 0.3
