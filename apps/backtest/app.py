@@ -23,6 +23,19 @@ DATE_FORMATS = (
     "%Y.%m.%d",
     "%Y%m%d",
 )
+CHART_HEIGHT = 520
+CHART_BG = "#ffffff"
+CHART_GRID = "#e0e0e0"
+CHART_TEXT = "#333333"
+CHART_UP = "#2e7d32"
+CHART_DOWN = "#c62828"
+MAX_DRAW_BARS = 1500
+ZOOM_MIN = 0.5
+ZOOM_MAX = 3.0
+ZOOM_STEP = 0.1
+CHART_MIN_BAR_STEP = 5
+CHART_MAX_BAR_STEP = 20
+PIP_SIZE = 0.01
 
 
 def parse_datetime_text(text, is_end=False):
@@ -81,6 +94,12 @@ def format_dt(dt):
 
 def format_price(value):
     return f"{value:.3f}"
+
+
+def format_axis_time(dt, show_date):
+    if show_date:
+        return dt.strftime("%m-%d %H:%M")
+    return dt.strftime("%H:%M")
 
 
 def load_signals(csv_dir):
@@ -335,19 +354,24 @@ class BacktestApp:
     def __init__(self, root):
         self.root = root
         self.root.title("USDJPY バックテスト")
+        self.root.rowconfigure(0, weight=1)
+        self.root.columnconfigure(0, weight=1)
         self.signals = []
+        self.chart_data = None
+        self.zoom_var = tk.DoubleVar(value=1.5)
+        self.zoom_text_var = tk.StringVar(value="")
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
-        self.stop_var = tk.StringVar(value="0.05")
-        self.limit_var = tk.StringVar(value="0.05")
-        self.spread_var = tk.StringVar(value="0.02")
+        self.stop_var = tk.StringVar(value="20")
+        self.limit_var = tk.StringVar(value="20")
+        self.spread_var = tk.StringVar(value="1")
         self.info_var = tk.StringVar(value="サイン件数: -")
 
-        top = ttk.Frame(root, padding=10)
+        top = ttk.Frame(root, padding=6)
         top.grid(sticky="nsew")
 
-        ttk.Label(top, textvariable=self.info_var).grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(top, textvariable=self.info_var).grid(row=0, column=0, columnspan=6, sticky="w")
 
         ttk.Label(top, text="開始(日本時間)").grid(row=1, column=0, sticky="w", pady=(8, 2))
         ttk.Entry(top, textvariable=self.start_var, width=22).grid(row=1, column=1, sticky="w", pady=(8, 2))
@@ -360,28 +384,65 @@ class BacktestApp:
             row=1, column=5, sticky="w", padx=(6, 0), pady=(8, 2)
         )
 
-        ttk.Label(top, text="ストップ幅").grid(row=2, column=0, sticky="w")
+        ttk.Label(top, text="ストップ幅(0.01=1)").grid(row=2, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.stop_var, width=12).grid(row=2, column=1, sticky="w")
-        ttk.Label(top, text="リミット幅").grid(row=2, column=2, sticky="w", padx=(12, 0))
+        ttk.Label(top, text="リミット幅(0.01=1)").grid(row=2, column=2, sticky="w", padx=(12, 0))
         ttk.Entry(top, textvariable=self.limit_var, width=12).grid(row=2, column=3, sticky="w")
 
-        ttk.Label(top, text="スプレッド").grid(row=3, column=0, sticky="w")
+        ttk.Label(top, text="スプレッド(0.01=1)").grid(row=3, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.spread_var, width=12).grid(row=3, column=1, sticky="w")
 
         self.run_btn = ttk.Button(top, text="実行", command=self.run_backtest)
         self.run_btn.grid(row=3, column=2, sticky="w", padx=(12, 0))
         ttk.Button(top, text="再読込", command=self.reload_signals).grid(row=3, column=3, sticky="w")
 
-        self.text = tk.Text(top, width=90, height=28)
-        self.text.grid(row=4, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
+        chart_ctrl = ttk.Frame(top)
+        chart_ctrl.grid(row=4, column=0, columnspan=6, pady=(10, 0), sticky="ew")
+        ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
+        self.zoom_scale = ttk.Scale(
+            chart_ctrl,
+            from_=ZOOM_MIN,
+            to=ZOOM_MAX,
+            variable=self.zoom_var,
+            command=self.on_zoom_change,
+        )
+        self.zoom_scale.grid(row=0, column=1, sticky="ew", padx=(8, 8))
+        ttk.Label(chart_ctrl, textvariable=self.zoom_text_var).grid(row=0, column=2, sticky="w")
+        ttk.Button(chart_ctrl, text="縮小", command=lambda: self.adjust_zoom(-1)).grid(row=0, column=3, padx=(12, 4))
+        ttk.Button(chart_ctrl, text="拡大", command=lambda: self.adjust_zoom(1)).grid(row=0, column=4, padx=(0, 4))
+        chart_ctrl.columnconfigure(1, weight=1)
+
+        self.chart_frame = ttk.Frame(top)
+        self.chart_frame.grid(row=5, column=0, columnspan=6, pady=(8, 0), sticky="nsew")
+        self.chart = tk.Canvas(
+            self.chart_frame,
+            background=CHART_BG,
+            highlightthickness=0,
+            height=CHART_HEIGHT,
+        )
+        self.chart.grid(row=0, column=0, sticky="nsew")
+        self.chart_hbar = ttk.Scrollbar(self.chart_frame, orient="horizontal", command=self.on_xscroll)
+        self.chart_hbar.grid(row=1, column=0, sticky="ew")
+        self.chart_vbar = ttk.Scrollbar(self.chart_frame, orient="vertical", command=self.on_yscroll)
+        self.chart_vbar.grid(row=0, column=1, sticky="ns")
+        self.chart.configure(xscrollcommand=self.chart_hbar.set, yscrollcommand=self.chart_vbar.set)
+        self.chart_frame.columnconfigure(0, weight=1)
+        self.chart_frame.rowconfigure(0, weight=1)
+        self.chart.bind("<Configure>", self.on_canvas_resize)
+        self.chart.bind("<MouseWheel>", self.on_mouse_wheel)
+
+        self.text = tk.Text(top, width=90, height=16)
+        self.text.grid(row=6, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
         self.text.configure(state="disabled")
         scroll = ttk.Scrollbar(top, command=self.text.yview)
-        scroll.grid(row=4, column=6, sticky="ns")
+        scroll.grid(row=6, column=6, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
         top.columnconfigure(4, weight=1)
-        top.rowconfigure(4, weight=1)
+        top.rowconfigure(5, weight=6)
+        top.rowconfigure(6, weight=2)
 
+        self.update_zoom_label()
         self.reload_signals()
 
     def log(self, message):
@@ -415,8 +476,211 @@ class BacktestApp:
         base = parse_date_for_calendar(target_var.get())
         CalendarDialog(self.root, target_var, base)
 
+    def update_zoom_label(self):
+        percent = int(self.zoom_var.get() * 100)
+        self.zoom_text_var.set(f"表示倍率: {percent}%")
+
+    def set_zoom(self, value):
+        if value < ZOOM_MIN:
+            value = ZOOM_MIN
+        if value > ZOOM_MAX:
+            value = ZOOM_MAX
+        current = float(self.zoom_var.get())
+        if abs(current - value) > 1e-6:
+            self.zoom_var.set(value)
+        self.update_zoom_label()
+        if self.chart_data:
+            bars, results = self.chart_data
+            self.draw_chart(bars, results)
+
+    def on_zoom_change(self, _value):
+        self.set_zoom(float(self.zoom_var.get()))
+
+    def adjust_zoom(self, direction):
+        current = float(self.zoom_var.get())
+        next_value = current + (ZOOM_STEP * direction)
+        self.set_zoom(next_value)
+
+    def on_mouse_wheel(self, event):
+        if event.state & 0x0004:
+            direction = 1 if event.delta > 0 else -1
+            self.adjust_zoom(direction)
+            return
+        if event.state & 0x0001:
+            delta = -1 if event.delta > 0 else 1
+            self.chart.xview_scroll(delta, "units")
+            if self.chart_data:
+                bars, results = self.chart_data
+                self.draw_chart(bars, results)
+            return
+        delta = -1 if event.delta > 0 else 1
+        self.chart.yview_scroll(delta, "units")
+
+    def on_xscroll(self, *args):
+        self.chart.xview(*args)
+        if self.chart_data:
+            bars, results = self.chart_data
+            self.draw_chart(bars, results)
+
+    def on_yscroll(self, *args):
+        self.chart.yview(*args)
+
+    def clear_chart(self):
+        self.chart.delete("all")
+        self.chart.configure(scrollregion=(0, 0, 0, 0))
+        self.chart_data = None
+
+    def on_canvas_resize(self, event):
+        if self.chart_data:
+            bars, results = self.chart_data
+            self.draw_chart(bars, results)
+
+    def draw_arrow(self, x, y, direction, color):
+        size = 6
+        if direction == "up":
+            points = (x, y - size, x - size, y + size, x + size, y + size)
+        else:
+            points = (x, y + size, x - size, y - size, x + size, y - size)
+        self.chart.create_polygon(points, fill=color, outline=color)
+
+    def draw_chart(self, bars, results):
+        xview = self.chart.xview()
+        yview = self.chart.yview()
+        self.chart.delete("all")
+        if not bars:
+            self.chart_data = None
+            return
+        self.chart_data = (bars, results)
+
+        width = self.chart.winfo_width()
+        height = self.chart.winfo_height()
+        if width <= 1:
+            width = 900
+        if height <= 1:
+            height = CHART_HEIGHT
+
+        left = 60
+        right = 20
+        top = 20
+        bottom = 40
+        count = len(bars)
+        zoom = float(self.zoom_var.get())
+        bar_step = CHART_MIN_BAR_STEP * zoom
+        if bar_step < 1:
+            bar_step = 1
+        if bar_step > CHART_MAX_BAR_STEP:
+            bar_step = CHART_MAX_BAR_STEP
+        base_w = left + right + max(1, (count - 1)) * bar_step
+        content_w = max(width, int(base_w))
+        content_h = max(height, top + bottom + 1)
+        plot_w = max(1, content_w - left - right)
+        plot_h = max(1, content_h - top - bottom)
+        self.chart.configure(scrollregion=(0, 0, content_w, content_h))
+
+        visible_bars = bars
+        if count > 1 and bar_step > 0:
+            visible_left = xview[0] * content_w
+            visible_right = xview[1] * content_w
+            start_idx = int((visible_left - left) / bar_step)
+            end_idx = int((visible_right - left) / bar_step) + 1
+            if start_idx < 0:
+                start_idx = 0
+            if end_idx > count:
+                end_idx = count
+            if end_idx <= start_idx:
+                start_idx = 0
+                end_idx = count
+            visible_bars = bars[start_idx:end_idx]
+
+        min_p = min(bar["low"] for bar in visible_bars)
+        max_p = max(bar["high"] for bar in visible_bars)
+        if max_p == min_p:
+            max_p += PIP_SIZE
+            min_p -= PIP_SIZE
+
+        def price_to_y(price):
+            return top + (max_p - price) / (max_p - min_p) * plot_h
+
+        def index_to_x(idx):
+            if count == 1:
+                return left + plot_w / 2
+            return left + idx * bar_step
+
+        ticks = 5
+        for i in range(ticks):
+            price = min_p + (max_p - min_p) * i / (ticks - 1)
+            y = price_to_y(price)
+            self.chart.create_line(left, y, content_w - right, y, fill=CHART_GRID)
+            self.chart.create_text(left - 6, y, text=format_price(price), anchor="e", fill=CHART_TEXT)
+
+        show_date = bars[0]["time"].date() != bars[-1]["time"].date()
+        time_ticks = min(5, count) if count > 1 else 1
+        for i in range(time_ticks):
+            idx = 0 if time_ticks == 1 else int((count - 1) * i / (time_ticks - 1))
+            x = index_to_x(idx)
+            bar_time_jst = bars[idx]["time"] + JST_OFFSET
+            label = format_axis_time(bar_time_jst, show_date)
+            self.chart.create_line(x, top, x, content_h - bottom, fill=CHART_GRID)
+            self.chart.create_text(x, content_h - bottom + 12, text=label, anchor="n", fill=CHART_TEXT)
+
+        body_w = max(1, bar_step * 0.6)
+        if body_w > 12:
+            body_w = 12
+        stride = (count + MAX_DRAW_BARS - 1) // MAX_DRAW_BARS
+        if stride < 1:
+            stride = 1
+
+        for idx in range(0, count, stride):
+            bar = bars[idx]
+            x = index_to_x(idx)
+            y_high = price_to_y(bar["high"])
+            y_low = price_to_y(bar["low"])
+            y_open = price_to_y(bar["open"])
+            y_close = price_to_y(bar["close"])
+            color = CHART_UP if bar["close"] >= bar["open"] else CHART_DOWN
+            self.chart.create_line(x, y_high, x, y_low, fill=color)
+            y_top = min(y_open, y_close)
+            y_bot = max(y_open, y_close)
+            if y_bot - y_top < 1:
+                y_bot = y_top + 1
+            self.chart.create_rectangle(
+                x - body_w / 2,
+                y_top,
+                x + body_w / 2,
+                y_bot,
+                fill=color,
+                outline=color,
+            )
+
+        index_by_time = {bar["time"]: idx for idx, bar in enumerate(bars)}
+        for item in results:
+            color = CHART_UP if item["action"] == "BUY" else CHART_DOWN
+            entry_idx = index_by_time.get(item["entry_time"])
+            if entry_idx is not None:
+                x = index_to_x(entry_idx)
+                y = price_to_y(item["entry_price"])
+                direction = "up" if item["action"] == "BUY" else "down"
+                self.draw_arrow(x, y, direction, color)
+            exit_idx = index_by_time.get(item["exit_time"])
+            if exit_idx is not None:
+                x = index_to_x(exit_idx)
+                y = price_to_y(item["exit_price"])
+                direction = "down" if item["action"] == "BUY" else "up"
+                self.draw_arrow(x, y, direction, color)
+
+        self.chart.create_text(
+            left,
+            6,
+            text="買い=上矢印 / 売り=下矢印 / クローズ=逆矢印",
+            anchor="nw",
+            fill=CHART_TEXT,
+        )
+        self.chart.xview_moveto(xview[0])
+        self.chart.yview_moveto(yview[0])
+
     def run_backtest(self):
         self.clear_log()
+        self.clear_chart()
         if not self.signals:
             self.reload_signals()
         if not self.signals:
@@ -433,18 +697,28 @@ class BacktestApp:
             messagebox.showerror("エラー", "開始が終了より後です")
             return
         try:
-            stop = float(self.stop_var.get().strip())
-            limit = float(self.limit_var.get().strip())
-            spread = float(self.spread_var.get().strip())
+            stop_pips = float(self.stop_var.get().strip())
+            limit_pips = float(self.limit_var.get().strip())
+            spread_pips = float(self.spread_var.get().strip())
         except ValueError:
             messagebox.showerror("エラー", "幅の値が数値ではありません")
             return
-        if stop < 0 or limit < 0 or spread < 0:
+        if stop_pips < 0 or limit_pips < 0 or spread_pips < 0:
             messagebox.showerror("エラー", "幅の値は0以上で入力してください")
             return
+        stop = stop_pips * PIP_SIZE
+        limit = limit_pips * PIP_SIZE
+        spread = spread_pips * PIP_SIZE
 
         start_utc = start_jst - JST_OFFSET
         end_utc = end_jst - JST_OFFSET
+
+        bars, index_by_time, bar_errors = load_ohlc_range(DATA_DIR, start_utc, end_utc)
+        for item in bar_errors:
+            self.log(item)
+        if not bars:
+            self.log("足データが読み込めません")
+            return
 
         period_signals = [
             item for item in self.signals if start_utc <= item["time_utc"] <= end_utc
@@ -453,14 +727,8 @@ class BacktestApp:
         self.log(f"期間内サイン: {len(period_signals)}")
 
         if not period_signals:
+            self.draw_chart(bars, [])
             self.log("期間内のサインがありません")
-            return
-
-        bars, index_by_time, bar_errors = load_ohlc_range(DATA_DIR, start_utc, end_utc)
-        for item in bar_errors:
-            self.log(item)
-        if not bars:
-            self.log("足データが読み込めません")
             return
 
         end_idx = len(bars) - 1
@@ -504,6 +772,8 @@ class BacktestApp:
         if missing:
             self.log(f"足が無いサイン: {missing}")
 
+        self.draw_chart(bars, results)
+
         if not results:
             self.log("約定できたサインがありません")
             return
@@ -534,6 +804,7 @@ class BacktestApp:
         self.log("・サインの時刻は日本時間として9時間引いて計算しています")
         self.log("・エントリーは該当足の終値です")
         self.log("・スプレッドは売買の両側に半分ずつ反映しています")
+        self.log("・幅の入力は 0.01 を 1 として扱っています")
         self.log("・同じ足で両方に触れた場合は不利な方を採用します")
         self.log("")
 
@@ -562,7 +833,14 @@ class BacktestApp:
 
 def main():
     root = tk.Tk()
-    root.minsize(820, 520)
+    root.minsize(1200, 700)
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    target_w = 1920
+    target_h = 1080
+    width = target_w if screen_w >= target_w else screen_w
+    height = target_h if screen_h >= target_h else screen_h
+    root.geometry(f"{width}x{height}")
     BacktestApp(root)
     root.mainloop()
 
