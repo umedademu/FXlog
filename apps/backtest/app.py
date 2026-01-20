@@ -282,10 +282,26 @@ def load_ohlc_range(data_dir, start_utc, end_utc):
     return bars, index_by_time, errors
 
 
-def simulate_trade(bars, start_idx, end_idx, direction, stop, limit, spread):
+def simulate_trade(
+    bars,
+    start_idx,
+    end_idx,
+    direction,
+    stop,
+    limit,
+    spread,
+    stop_limit_enabled,
+    time_limit_enabled,
+    time_limit_min,
+):
     half = spread / 2.0
     entry_mid = bars[start_idx]["close"]
     entry_time = bars[start_idx]["time"]
+    time_idx = None
+    if time_limit_enabled and time_limit_min is not None:
+        time_idx = start_idx + time_limit_min
+        if time_idx > end_idx:
+            time_idx = None
 
     if direction == "BUY":
         entry_price = entry_mid + half
@@ -297,8 +313,8 @@ def simulate_trade(bars, start_idx, end_idx, direction, stop, limit, spread):
             bar = bars[idx]
             low = bar["low"]
             high = bar["high"]
-            hit_stop = stop > 0 and low <= stop_trigger
-            hit_limit = limit > 0 and high >= limit_trigger
+            hit_stop = stop_limit_enabled and stop > 0 and low <= stop_trigger
+            hit_limit = stop_limit_enabled and limit > 0 and high >= limit_trigger
             if hit_stop and hit_limit:
                 return {
                     "exit_reason": "stop",
@@ -317,6 +333,13 @@ def simulate_trade(bars, start_idx, end_idx, direction, stop, limit, spread):
                     "exit_price": limit_price,
                     "exit_time": bar["time"],
                 }
+            if time_idx is not None and idx >= time_idx:
+                exit_mid = bar["close"]
+                return {
+                    "exit_reason": "time",
+                    "exit_price": exit_mid - half,
+                    "exit_time": bar["time"],
+                }
         exit_mid = bars[end_idx]["close"]
         return {
             "exit_reason": "end",
@@ -333,8 +356,8 @@ def simulate_trade(bars, start_idx, end_idx, direction, stop, limit, spread):
         bar = bars[idx]
         low = bar["low"]
         high = bar["high"]
-        hit_stop = stop > 0 and high >= stop_trigger
-        hit_limit = limit > 0 and low <= limit_trigger
+        hit_stop = stop_limit_enabled and stop > 0 and high >= stop_trigger
+        hit_limit = stop_limit_enabled and limit > 0 and low <= limit_trigger
         if hit_stop and hit_limit:
             return {
                 "exit_reason": "stop",
@@ -351,6 +374,13 @@ def simulate_trade(bars, start_idx, end_idx, direction, stop, limit, spread):
             return {
                 "exit_reason": "limit",
                 "exit_price": limit_price,
+                "exit_time": bar["time"],
+            }
+        if time_idx is not None and idx >= time_idx:
+            exit_mid = bar["close"]
+            return {
+                "exit_reason": "time",
+                "exit_price": exit_mid + half,
                 "exit_time": bar["time"],
             }
     exit_mid = bars[end_idx]["close"]
@@ -373,6 +403,9 @@ class BacktestApp:
         self.zoom_var = tk.DoubleVar(value=1.5)
         self.zoom_text_var = tk.StringVar(value="")
         self.timezone_var = tk.StringVar(value="JST")
+        self.stop_limit_enabled_var = tk.BooleanVar(value=True)
+        self.time_limit_enabled_var = tk.BooleanVar(value=True)
+        self.time_limit_var = tk.StringVar(value="30")
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -422,8 +455,19 @@ class BacktestApp:
         self.run_btn.grid(row=3, column=2, sticky="w", padx=(12, 0))
         ttk.Button(top, text="再読込", command=self.reload_signals).grid(row=3, column=3, sticky="w")
 
+        exit_opts = ttk.Frame(top)
+        exit_opts.grid(row=4, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(exit_opts, text="ストップ/リミットを使う", variable=self.stop_limit_enabled_var).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Checkbutton(exit_opts, text="時間クローズ", variable=self.time_limit_enabled_var).grid(
+            row=0, column=1, sticky="w", padx=(12, 0)
+        )
+        ttk.Entry(exit_opts, textvariable=self.time_limit_var, width=6).grid(row=0, column=2, padx=(6, 2))
+        ttk.Label(exit_opts, text="分経過でクローズ").grid(row=0, column=3, sticky="w")
+
         chart_ctrl = ttk.Frame(top)
-        chart_ctrl.grid(row=4, column=0, columnspan=6, pady=(4, 0), sticky="ew")
+        chart_ctrl.grid(row=5, column=0, columnspan=6, pady=(4, 0), sticky="ew")
         ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
         self.zoom_scale = ttk.Scale(
             chart_ctrl,
@@ -454,7 +498,7 @@ class BacktestApp:
         chart_ctrl.columnconfigure(1, weight=1)
 
         self.chart_frame = ttk.Frame(top)
-        self.chart_frame.grid(row=5, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
+        self.chart_frame.grid(row=6, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
         self.chart = tk.Canvas(
             self.chart_frame,
             background=CHART_BG,
@@ -473,15 +517,15 @@ class BacktestApp:
         self.chart.bind("<MouseWheel>", self.on_mouse_wheel)
 
         self.text = tk.Text(top, width=90, height=16)
-        self.text.grid(row=6, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
+        self.text.grid(row=7, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
         self.text.configure(state="disabled")
         scroll = ttk.Scrollbar(top, command=self.text.yview)
-        scroll.grid(row=6, column=6, sticky="ns")
+        scroll.grid(row=7, column=6, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
         top.columnconfigure(4, weight=1)
-        top.rowconfigure(5, weight=6)
-        top.rowconfigure(6, weight=2)
+        top.rowconfigure(6, weight=6)
+        top.rowconfigure(7, weight=2)
 
         stats = ttk.Frame(self.tab_pnl, padding=10)
         stats.grid(row=0, column=0, sticky="ew")
@@ -968,16 +1012,42 @@ class BacktestApp:
         if start_jst > end_jst:
             messagebox.showerror("エラー", "開始が終了より後です")
             return
+        stop_limit_enabled = bool(self.stop_limit_enabled_var.get())
+        time_limit_enabled = bool(self.time_limit_enabled_var.get())
+
         try:
-            stop_pips = float(self.stop_var.get().strip())
-            limit_pips = float(self.limit_var.get().strip())
             spread_pips = float(self.spread_var.get().strip())
         except ValueError:
-            messagebox.showerror("エラー", "幅の値が数値ではありません")
+            messagebox.showerror("エラー", "スプレッドの値が数値ではありません")
             return
-        if stop_pips < 0 or limit_pips < 0 or spread_pips < 0:
-            messagebox.showerror("エラー", "幅の値は0以上で入力してください")
+        if spread_pips < 0:
+            messagebox.showerror("エラー", "スプレッドの値は0以上で入力してください")
             return
+
+        stop_pips = 0.0
+        limit_pips = 0.0
+        if stop_limit_enabled:
+            try:
+                stop_pips = float(self.stop_var.get().strip())
+                limit_pips = float(self.limit_var.get().strip())
+            except ValueError:
+                messagebox.showerror("エラー", "ストップ/リミットの値が数値ではありません")
+                return
+            if stop_pips < 0 or limit_pips < 0:
+                messagebox.showerror("エラー", "ストップ/リミットは0以上で入力してください")
+                return
+
+        time_limit_min = None
+        if time_limit_enabled:
+            try:
+                time_limit_min = int(self.time_limit_var.get().strip())
+            except ValueError:
+                messagebox.showerror("エラー", "時間クローズは分で入力してください")
+                return
+            if time_limit_min < 1:
+                messagebox.showerror("エラー", "時間クローズは1以上で入力してください")
+                return
+
         stop = stop_pips * PIP_SIZE
         limit = limit_pips * PIP_SIZE
         spread = spread_pips * PIP_SIZE
@@ -1022,6 +1092,9 @@ class BacktestApp:
                 stop,
                 limit,
                 spread,
+                stop_limit_enabled,
+                time_limit_enabled,
+                time_limit_min,
             )
             entry_mid = bars[idx]["close"]
             half = spread / 2.0
@@ -1089,6 +1162,7 @@ class BacktestApp:
         self.log("・エントリーは該当足の終値です")
         self.log("・スプレッドは売買の両側に半分ずつ反映しています")
         self.log("・幅の入力は 0.01 を 1 として扱っています")
+        self.log("・時間クローズは指定分経過後の足の終値です")
         self.log("・同じ足で両方に触れた場合は不利な方を採用します")
         self.log("")
 
@@ -1104,6 +1178,7 @@ class BacktestApp:
             reason_label = {
                 "stop": "損切り",
                 "limit": "利確",
+                "time": "時間",
                 "end": "期間終了",
             }.get(item["exit_reason"], "不明")
             self.log(
