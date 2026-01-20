@@ -372,6 +372,7 @@ class BacktestApp:
         self.equity_data = None
         self.zoom_var = tk.DoubleVar(value=1.5)
         self.zoom_text_var = tk.StringVar(value="")
+        self.timezone_var = tk.StringVar(value="JST")
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -435,6 +436,21 @@ class BacktestApp:
         ttk.Label(chart_ctrl, textvariable=self.zoom_text_var).grid(row=0, column=2, sticky="w")
         ttk.Button(chart_ctrl, text="縮小", command=lambda: self.adjust_zoom(-1)).grid(row=0, column=3, padx=(12, 4))
         ttk.Button(chart_ctrl, text="拡大", command=lambda: self.adjust_zoom(1)).grid(row=0, column=4, padx=(0, 4))
+        ttk.Label(chart_ctrl, text="時刻表示").grid(row=0, column=5, sticky="w", padx=(12, 4))
+        ttk.Radiobutton(
+            chart_ctrl,
+            text="JST",
+            variable=self.timezone_var,
+            value="JST",
+            command=self.on_timezone_change,
+        ).grid(row=0, column=6, sticky="w")
+        ttk.Radiobutton(
+            chart_ctrl,
+            text="UTC",
+            variable=self.timezone_var,
+            value="UTC",
+            command=self.on_timezone_change,
+        ).grid(row=0, column=7, sticky="w")
         chart_ctrl.columnconfigure(1, weight=1)
 
         self.chart_frame = ttk.Frame(top)
@@ -517,6 +533,18 @@ class BacktestApp:
         self.trade_count_var.set("-")
         self.win_rate_var.set("-")
         self.pf_var.set("-")
+
+    def display_time(self, dt):
+        if self.timezone_var.get() == "JST":
+            return dt + JST_OFFSET
+        return dt
+
+    def on_timezone_change(self):
+        if self.chart_data:
+            bars, results = self.chart_data
+            self.draw_chart(bars, results)
+        if self.equity_data is not None:
+            self.draw_equity_chart(self.equity_data)
 
     def reload_signals(self):
         self.signals, errors = load_signals(CSV_DIR)
@@ -696,14 +724,14 @@ class BacktestApp:
             self.chart.create_text(axis_x, y, text=format_price(price), anchor="e", fill=CHART_TEXT)
         self.chart.create_line(grid_right, top, grid_right, top + plot_h, fill=CHART_AXIS)
 
-        show_date = bars[0]["time"].date() != bars[-1]["time"].date()
+        show_date = self.display_time(bars[0]["time"]).date() != self.display_time(bars[-1]["time"]).date()
         visible_count = end_idx - start_idx + 1
         time_ticks = min(6, visible_count) if visible_count > 1 else 1
         for i in range(time_ticks):
             idx = start_idx if time_ticks == 1 else int(start_idx + (visible_count - 1) * i / (time_ticks - 1))
             x = index_to_x(idx)
-            bar_time_jst = bars[idx]["time"] + JST_OFFSET
-            label = format_axis_time(bar_time_jst, show_date)
+            bar_time = self.display_time(bars[idx]["time"])
+            label = format_axis_time(bar_time, show_date)
             self.chart.create_line(x, top, x, top + plot_h, fill=CHART_GRID)
             self.chart.create_text(x, top + plot_h + 8, text=label, anchor="n", fill=CHART_TEXT)
 
@@ -766,6 +794,14 @@ class BacktestApp:
             anchor="nw",
             fill=CHART_TEXT,
         )
+        tz_label = "JST" if self.timezone_var.get() == "JST" else "UTC"
+        self.chart.create_text(
+            grid_left,
+            18,
+            text=f"時刻: {tz_label}",
+            anchor="nw",
+            fill=CHART_TEXT,
+        )
         self.chart.xview_moveto(xview[0])
         self.chart.yview_moveto(yview[0])
 
@@ -825,12 +861,12 @@ class BacktestApp:
             self.equity_chart.create_text(axis_x, y, text=format_pips(value), anchor="e", fill=CHART_TEXT)
         self.equity_chart.create_line(width - right, top, width - right, top + plot_h, fill=CHART_AXIS)
 
-        show_date = points[0]["time"].date() != points[-1]["time"].date()
+        show_date = self.display_time(points[0]["time"]).date() != self.display_time(points[-1]["time"]).date()
         time_ticks = min(6, count) if count > 1 else 1
         for i in range(time_ticks):
             idx = 0 if time_ticks == 1 else int((count - 1) * i / (time_ticks - 1))
             x = index_to_x(idx)
-            label = format_axis_time(points[idx]["time"], show_date)
+            label = format_axis_time(self.display_time(points[idx]["time"]), show_date)
             self.equity_chart.create_line(x, top, x, top + plot_h, fill=CHART_GRID)
             self.equity_chart.create_text(x, top + plot_h + 8, text=label, anchor="n", fill=CHART_TEXT)
 
@@ -860,6 +896,14 @@ class BacktestApp:
             left,
             4,
             text="損益の変動(pips)",
+            anchor="nw",
+            fill=CHART_TEXT,
+        )
+        tz_label = "JST" if self.timezone_var.get() == "JST" else "UTC"
+        self.equity_chart.create_text(
+            left,
+            18,
+            text=f"時刻: {tz_label}",
             anchor="nw",
             fill=CHART_TEXT,
         )
@@ -1014,7 +1058,7 @@ class BacktestApp:
         equity_points = []
         for item in results_sorted:
             equity += item["pnl"] / PIP_SIZE
-            equity_points.append({"time": item["exit_time"] + JST_OFFSET, "value": equity})
+            equity_points.append({"time": item["exit_time"], "value": equity})
         self.draw_equity_chart(equity_points)
         self.update_stats(results_sorted)
 
