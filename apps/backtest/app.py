@@ -166,13 +166,17 @@ def load_signals(csv_dir):
                         continue
                     tags = {
                         "is_entry": parse_flag(row.get("is_entry")),
+                        "is_entry_plan": parse_flag(row.get("is_entry_plan")),
                         "is_boast": parse_flag(row.get("is_boast")),
                         "is_fear": parse_flag(row.get("is_fear")),
+                        "is_fear_plan": parse_flag(row.get("is_fear_plan")),
                         "is_greed": parse_flag(row.get("is_greed")),
                         "is_stop": parse_flag(row.get("is_stop")),
                         "is_stop_plan": parse_flag(row.get("is_stop_plan")),
                         "is_lc": parse_flag(row.get("is_lc")),
+                        "is_lc_plan": parse_flag(row.get("is_lc_plan")),
                         "is_tp": parse_flag(row.get("is_tp")),
+                        "is_tp_plan": parse_flag(row.get("is_tp_plan")),
                     }
                     signals.append(
                         {
@@ -329,6 +333,15 @@ def find_limit_entry(
     limit_expire_min,
 ):
     half = spread / 2.0
+    current_mid = bars[start_idx]["close"]
+    if direction == "BUY":
+        if current_mid <= limit_price:
+            entry_price = current_mid + half
+            return start_idx, current_mid, entry_price
+    else:
+        if current_mid >= limit_price:
+            entry_price = current_mid - half
+            return start_idx, current_mid, entry_price
     if limit_expire_min is None:
         last_idx = end_idx
     else:
@@ -482,9 +495,13 @@ class BacktestApp:
         self.limit_offset_var = tk.StringVar(value="5")
         self.limit_expire_var = tk.StringVar(value="180")
         self.filter_entry_var = tk.BooleanVar(value=False)
+        self.filter_entry_plan_var = tk.BooleanVar(value=False)
+        self.filter_fear_plan_var = tk.BooleanVar(value=False)
         self.filter_greed_var = tk.BooleanVar(value=False)
         self.filter_stop_plan_var = tk.BooleanVar(value=False)
         self.filter_lc_var = tk.BooleanVar(value=False)
+        self.filter_lc_plan_var = tk.BooleanVar(value=False)
+        self.filter_tp_plan_var = tk.BooleanVar(value=False)
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -559,28 +576,41 @@ class BacktestApp:
         ttk.Checkbutton(filter_opts, text="新規", variable=self.filter_entry_var).grid(
             row=0, column=1, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="自慢", variable=self.filter_boast_var).grid(
+        ttk.Checkbutton(filter_opts, text="新規予定", variable=self.filter_entry_plan_var).grid(
             row=0, column=2, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="恐怖", variable=self.filter_fear_var).grid(
+        ttk.Checkbutton(filter_opts, text="自慢", variable=self.filter_boast_var).grid(
             row=0, column=3, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="欲望", variable=self.filter_greed_var).grid(
+        ttk.Checkbutton(filter_opts, text="恐怖", variable=self.filter_fear_var).grid(
             row=0, column=4, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="損切", variable=self.filter_stop_var).grid(
+        ttk.Checkbutton(filter_opts, text="恐怖予定", variable=self.filter_fear_plan_var).grid(
             row=0, column=5, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="損切予定", variable=self.filter_stop_plan_var).grid(
+        ttk.Checkbutton(filter_opts, text="欲望", variable=self.filter_greed_var).grid(
             row=0, column=6, sticky="w", padx=(8, 0)
         )
+        ttk.Label(filter_opts, text="").grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(filter_opts, text="損切", variable=self.filter_stop_var).grid(
+            row=1, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="損切予定", variable=self.filter_stop_plan_var).grid(
+            row=1, column=2, sticky="w", padx=(8, 0)
+        )
         ttk.Checkbutton(filter_opts, text="ロスカ", variable=self.filter_lc_var).grid(
-            row=0, column=7, sticky="w", padx=(8, 0)
+            row=1, column=3, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="ロスカ予定", variable=self.filter_lc_plan_var).grid(
+            row=1, column=4, sticky="w", padx=(8, 0)
         )
         ttk.Checkbutton(filter_opts, text="利確", variable=self.filter_tp_var).grid(
-            row=0, column=8, sticky="w", padx=(8, 0)
+            row=1, column=5, sticky="w", padx=(8, 0)
         )
-        ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=0, column=9, sticky="w", padx=(8, 0))
+        ttk.Checkbutton(filter_opts, text="利確予定", variable=self.filter_tp_plan_var).grid(
+            row=1, column=6, sticky="w", padx=(8, 0)
+        )
+        ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=1, column=7, sticky="w", padx=(8, 0))
 
         chart_ctrl = ttk.Frame(top)
         chart_ctrl.grid(row=7, column=0, columnspan=6, pady=(4, 0), sticky="ew")
@@ -700,10 +730,14 @@ class BacktestApp:
         selected = []
         if self.filter_entry_var.get():
             selected.append("is_entry")
+        if self.filter_entry_plan_var.get():
+            selected.append("is_entry_plan")
         if self.filter_boast_var.get():
             selected.append("is_boast")
         if self.filter_fear_var.get():
             selected.append("is_fear")
+        if self.filter_fear_plan_var.get():
+            selected.append("is_fear_plan")
         if self.filter_greed_var.get():
             selected.append("is_greed")
         if self.filter_stop_var.get():
@@ -712,8 +746,12 @@ class BacktestApp:
             selected.append("is_stop_plan")
         if self.filter_lc_var.get():
             selected.append("is_lc")
+        if self.filter_lc_plan_var.get():
+            selected.append("is_lc_plan")
         if self.filter_tp_var.get():
             selected.append("is_tp")
+        if self.filter_tp_plan_var.get():
+            selected.append("is_tp_plan")
         return selected
 
     def filter_signals_by_tags(self, signals):
@@ -1249,13 +1287,17 @@ class BacktestApp:
         if selected_tags is not None:
             label_map = {
                 "is_entry": "新規",
+                "is_entry_plan": "新規予定",
                 "is_boast": "自慢",
                 "is_fear": "恐怖",
+                "is_fear_plan": "恐怖予定",
                 "is_greed": "欲望",
                 "is_stop": "損切",
                 "is_stop_plan": "損切予定",
                 "is_lc": "ロスカ",
+                "is_lc_plan": "ロスカ予定",
                 "is_tp": "利確",
+                "is_tp_plan": "利確予定",
             }
             labels = [label_map.get(key, key) for key in selected_tags]
             self.log(f"理由絞り込み: {' / '.join(labels)} -> {len(period_signals)}")
@@ -1280,6 +1322,7 @@ class BacktestApp:
                 continue
             direction = signal["action"]
             entry_type = signal.get("entry_type") or "INSTANT"
+            tags = signal.get("tags") or {}
             entry_idx = idx
             entry_mid = None
             entry_price = None
@@ -1288,10 +1331,11 @@ class BacktestApp:
                 if base_price is None:
                     limit_missing += 1
                     continue
+                use_plan_offset = bool(tags.get("is_entry_plan") or tags.get("is_tp_plan"))
                 if direction == "BUY":
-                    limit_price = base_price - limit_offset
+                    limit_price = base_price + limit_offset if use_plan_offset else base_price - limit_offset
                 else:
-                    limit_price = base_price + limit_offset
+                    limit_price = base_price - limit_offset if use_plan_offset else base_price + limit_offset
                 found = find_limit_entry(
                     bars,
                     idx,
