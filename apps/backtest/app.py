@@ -84,6 +84,13 @@ def parse_signal_datetime(text):
     return None
 
 
+def parse_flag(value):
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in ("1", "true", "yes", "y")
+
+
 def normalize_action(text):
     if not text:
         return None
@@ -140,12 +147,19 @@ def load_signals(csv_dir):
                     action_norm = normalize_action(action)
                     if not action_norm:
                         continue
+                    tags = {
+                        "is_boast": parse_flag(row.get("is_boast")),
+                        "is_fear": parse_flag(row.get("is_fear")),
+                        "is_stop": parse_flag(row.get("is_stop")),
+                        "is_tp": parse_flag(row.get("is_tp")),
+                    }
                     signals.append(
                         {
                             "time_jst": dt_jst,
                             "time_utc": dt_jst - JST_OFFSET,
                             "action": action_norm,
                             "source": row.get("source") or os.path.basename(path),
+                            "tags": tags,
                         }
                     )
         except Exception as exc:
@@ -406,6 +420,10 @@ class BacktestApp:
         self.stop_limit_enabled_var = tk.BooleanVar(value=True)
         self.time_limit_enabled_var = tk.BooleanVar(value=True)
         self.time_limit_var = tk.StringVar(value="30")
+        self.filter_boast_var = tk.BooleanVar(value=False)
+        self.filter_fear_var = tk.BooleanVar(value=False)
+        self.filter_stop_var = tk.BooleanVar(value=False)
+        self.filter_tp_var = tk.BooleanVar(value=False)
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -466,8 +484,25 @@ class BacktestApp:
         ttk.Entry(exit_opts, textvariable=self.time_limit_var, width=6).grid(row=0, column=2, padx=(6, 2))
         ttk.Label(exit_opts, text="分経過でクローズ").grid(row=0, column=3, sticky="w")
 
+        filter_opts = ttk.Frame(top)
+        filter_opts.grid(row=5, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ttk.Label(filter_opts, text="理由で絞り込み").grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(filter_opts, text="自慢", variable=self.filter_boast_var).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="恐怖", variable=self.filter_fear_var).grid(
+            row=0, column=2, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="損切り", variable=self.filter_stop_var).grid(
+            row=0, column=3, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="利確", variable=self.filter_tp_var).grid(
+            row=0, column=4, sticky="w", padx=(8, 0)
+        )
+        ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=0, column=5, sticky="w", padx=(8, 0))
+
         chart_ctrl = ttk.Frame(top)
-        chart_ctrl.grid(row=5, column=0, columnspan=6, pady=(4, 0), sticky="ew")
+        chart_ctrl.grid(row=6, column=0, columnspan=6, pady=(4, 0), sticky="ew")
         ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
         self.zoom_scale = ttk.Scale(
             chart_ctrl,
@@ -498,7 +533,7 @@ class BacktestApp:
         chart_ctrl.columnconfigure(1, weight=1)
 
         self.chart_frame = ttk.Frame(top)
-        self.chart_frame.grid(row=6, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
+        self.chart_frame.grid(row=7, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
         self.chart = tk.Canvas(
             self.chart_frame,
             background=CHART_BG,
@@ -517,15 +552,15 @@ class BacktestApp:
         self.chart.bind("<MouseWheel>", self.on_mouse_wheel)
 
         self.text = tk.Text(top, width=90, height=16)
-        self.text.grid(row=7, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
+        self.text.grid(row=8, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
         self.text.configure(state="disabled")
         scroll = ttk.Scrollbar(top, command=self.text.yview)
-        scroll.grid(row=7, column=6, sticky="ns")
+        scroll.grid(row=8, column=6, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
         top.columnconfigure(4, weight=1)
-        top.rowconfigure(6, weight=6)
-        top.rowconfigure(7, weight=2)
+        top.rowconfigure(7, weight=6)
+        top.rowconfigure(8, weight=2)
 
         stats = ttk.Frame(self.tab_pnl, padding=10)
         stats.grid(row=0, column=0, sticky="ew")
@@ -577,6 +612,29 @@ class BacktestApp:
         self.trade_count_var.set("-")
         self.win_rate_var.set("-")
         self.pf_var.set("-")
+
+    def selected_tag_keys(self):
+        selected = []
+        if self.filter_boast_var.get():
+            selected.append("is_boast")
+        if self.filter_fear_var.get():
+            selected.append("is_fear")
+        if self.filter_stop_var.get():
+            selected.append("is_stop")
+        if self.filter_tp_var.get():
+            selected.append("is_tp")
+        return selected
+
+    def filter_signals_by_tags(self, signals):
+        selected = self.selected_tag_keys()
+        if not selected:
+            return signals, None
+        filtered = []
+        for item in signals:
+            tags = item.get("tags") or {}
+            if any(tags.get(key) for key in selected):
+                filtered.append(item)
+        return filtered, selected
 
     def display_time(self, dt):
         if self.timezone_var.get() == "JST":
@@ -1067,6 +1125,17 @@ class BacktestApp:
         ]
         self.log(f"サイン総数: {len(self.signals)}")
         self.log(f"期間内サイン: {len(period_signals)}")
+
+        period_signals, selected_tags = self.filter_signals_by_tags(period_signals)
+        if selected_tags is not None:
+            label_map = {
+                "is_boast": "自慢",
+                "is_fear": "恐怖",
+                "is_stop": "損切り",
+                "is_tp": "利確",
+            }
+            labels = [label_map.get(key, key) for key in selected_tags]
+            self.log(f"理由絞り込み: {' / '.join(labels)} -> {len(period_signals)}")
 
         if not period_signals:
             self.draw_chart(bars, [])
