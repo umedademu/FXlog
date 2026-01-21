@@ -424,6 +424,7 @@ class BacktestApp:
         self.filter_fear_var = tk.BooleanVar(value=False)
         self.filter_stop_var = tk.BooleanVar(value=False)
         self.filter_tp_var = tk.BooleanVar(value=False)
+        self.drag_start_y = 0
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -550,6 +551,8 @@ class BacktestApp:
         self.chart_frame.rowconfigure(0, weight=1)
         self.chart.bind("<Configure>", self.on_canvas_resize)
         self.chart.bind("<MouseWheel>", self.on_mouse_wheel)
+        self.chart.bind("<ButtonPress-1>", self.on_chart_drag_start)
+        self.chart.bind("<B1-Motion>", self.on_chart_drag_move)
 
         self.text = tk.Text(top, width=90, height=16)
         self.text.grid(row=8, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
@@ -707,6 +710,16 @@ class BacktestApp:
             return
         delta = -1 if event.delta > 0 else 1
         self.chart.yview_scroll(delta, "units")
+
+    def on_chart_drag_start(self, event):
+        self.drag_start_y = event.y
+        self.chart.scan_mark(event.x, event.y)
+
+    def on_chart_drag_move(self, event):
+        self.chart.scan_dragto(event.x, self.drag_start_y, gain=1)
+        if self.chart_data:
+            bars, results = self.chart_data
+            self.draw_chart(bars, results)
 
     def on_xscroll(self, *args):
         self.chart.xview(*args)
