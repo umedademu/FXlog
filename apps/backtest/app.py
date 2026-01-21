@@ -91,6 +91,15 @@ def parse_flag(value):
     return text in ("1", "true", "yes", "y")
 
 
+def normalize_entry_type(text):
+    if not text:
+        return "INSTANT"
+    cleaned = str(text).strip().upper()
+    if cleaned == "LIMIT":
+        return "LIMIT"
+    return "INSTANT"
+
+
 def normalize_action(text):
     if not text:
         return None
@@ -138,6 +147,14 @@ def load_signals(csv_dir):
                 for row in reader:
                     dt_text = row.get("datetime") or row.get("time") or row.get("日時")
                     action = row.get("action") or row.get("side") or row.get("売買")
+                    entry_type = normalize_entry_type(row.get("entry_type"))
+                    entry_price_text = row.get("entry_price")
+                    entry_price = None
+                    if entry_price_text not in (None, ""):
+                        try:
+                            entry_price = float(entry_price_text)
+                        except ValueError:
+                            entry_price = None
                     symbol = row.get("symbol") or row.get("通貨")
                     if symbol and symbol.strip().upper() != "USDJPY":
                         continue
@@ -148,9 +165,13 @@ def load_signals(csv_dir):
                     if not action_norm:
                         continue
                     tags = {
+                        "is_entry": parse_flag(row.get("is_entry")),
                         "is_boast": parse_flag(row.get("is_boast")),
                         "is_fear": parse_flag(row.get("is_fear")),
+                        "is_greed": parse_flag(row.get("is_greed")),
                         "is_stop": parse_flag(row.get("is_stop")),
+                        "is_stop_plan": parse_flag(row.get("is_stop_plan")),
+                        "is_lc": parse_flag(row.get("is_lc")),
                         "is_tp": parse_flag(row.get("is_tp")),
                     }
                     signals.append(
@@ -158,6 +179,8 @@ def load_signals(csv_dir):
                             "time_jst": dt_jst,
                             "time_utc": dt_jst - JST_OFFSET,
                             "action": action_norm,
+                            "entry_type": entry_type,
+                            "entry_price": entry_price,
                             "source": row.get("source") or os.path.basename(path),
                             "tags": tags,
                         }
@@ -296,6 +319,36 @@ def load_ohlc_range(data_dir, start_utc, end_utc):
     return bars, index_by_time, errors
 
 
+def find_limit_entry(
+    bars,
+    start_idx,
+    end_idx,
+    direction,
+    limit_price,
+    spread,
+    limit_expire_min,
+):
+    half = spread / 2.0
+    if limit_expire_min is None:
+        last_idx = end_idx
+    else:
+        last_idx = start_idx + limit_expire_min
+        if last_idx > end_idx:
+            last_idx = end_idx
+
+    for idx in range(start_idx + 1, last_idx + 1):
+        bar = bars[idx]
+        if direction == "BUY":
+            if bar["low"] <= limit_price:
+                entry_price = limit_price + half
+                return idx, limit_price, entry_price
+        else:
+            if bar["high"] >= limit_price:
+                entry_price = limit_price - half
+                return idx, limit_price, entry_price
+    return None
+
+
 def simulate_trade(
     bars,
     start_idx,
@@ -307,10 +360,11 @@ def simulate_trade(
     stop_limit_enabled,
     time_limit_enabled,
     time_limit_min,
+    entry_mid=None,
 ):
     half = spread / 2.0
-    entry_mid = bars[start_idx]["close"]
-    entry_time = bars[start_idx]["time"]
+    if entry_mid is None:
+        entry_mid = bars[start_idx]["close"]
     time_idx = None
     if time_limit_enabled and time_limit_min is not None:
         time_idx = start_idx + time_limit_min
@@ -425,6 +479,12 @@ class BacktestApp:
         self.filter_stop_var = tk.BooleanVar(value=False)
         self.filter_tp_var = tk.BooleanVar(value=False)
         self.drag_start_y = 0
+        self.limit_offset_var = tk.StringVar(value="5")
+        self.limit_expire_var = tk.StringVar(value="180")
+        self.filter_entry_var = tk.BooleanVar(value=False)
+        self.filter_greed_var = tk.BooleanVar(value=False)
+        self.filter_stop_plan_var = tk.BooleanVar(value=False)
+        self.filter_lc_var = tk.BooleanVar(value=False)
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -485,25 +545,45 @@ class BacktestApp:
         ttk.Entry(exit_opts, textvariable=self.time_limit_var, width=6).grid(row=0, column=2, padx=(6, 2))
         ttk.Label(exit_opts, text="分経過でクローズ").grid(row=0, column=3, sticky="w")
 
+        limit_opts = ttk.Frame(top)
+        limit_opts.grid(row=5, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ttk.Label(limit_opts, text="指値位置(0.01=1)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(limit_opts, textvariable=self.limit_offset_var, width=6).grid(row=0, column=1, padx=(6, 12))
+        ttk.Label(limit_opts, text="指値の有効(分)").grid(row=0, column=2, sticky="w")
+        ttk.Entry(limit_opts, textvariable=self.limit_expire_var, width=6).grid(row=0, column=3, padx=(6, 2))
+        ttk.Label(limit_opts, text="分経過で解除").grid(row=0, column=4, sticky="w")
+
         filter_opts = ttk.Frame(top)
-        filter_opts.grid(row=5, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        filter_opts.grid(row=6, column=0, columnspan=6, sticky="w", pady=(4, 0))
         ttk.Label(filter_opts, text="理由で絞り込み").grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(filter_opts, text="自慢", variable=self.filter_boast_var).grid(
+        ttk.Checkbutton(filter_opts, text="新規", variable=self.filter_entry_var).grid(
             row=0, column=1, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="恐怖", variable=self.filter_fear_var).grid(
+        ttk.Checkbutton(filter_opts, text="自慢", variable=self.filter_boast_var).grid(
             row=0, column=2, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="損切り", variable=self.filter_stop_var).grid(
+        ttk.Checkbutton(filter_opts, text="恐怖", variable=self.filter_fear_var).grid(
             row=0, column=3, sticky="w", padx=(8, 0)
         )
-        ttk.Checkbutton(filter_opts, text="利確", variable=self.filter_tp_var).grid(
+        ttk.Checkbutton(filter_opts, text="欲望", variable=self.filter_greed_var).grid(
             row=0, column=4, sticky="w", padx=(8, 0)
         )
-        ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=0, column=5, sticky="w", padx=(8, 0))
+        ttk.Checkbutton(filter_opts, text="損切", variable=self.filter_stop_var).grid(
+            row=0, column=5, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="損切予定", variable=self.filter_stop_plan_var).grid(
+            row=0, column=6, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="ロスカ", variable=self.filter_lc_var).grid(
+            row=0, column=7, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(filter_opts, text="利確", variable=self.filter_tp_var).grid(
+            row=0, column=8, sticky="w", padx=(8, 0)
+        )
+        ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=0, column=9, sticky="w", padx=(8, 0))
 
         chart_ctrl = ttk.Frame(top)
-        chart_ctrl.grid(row=6, column=0, columnspan=6, pady=(4, 0), sticky="ew")
+        chart_ctrl.grid(row=7, column=0, columnspan=6, pady=(4, 0), sticky="ew")
         ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
         self.zoom_scale = ttk.Scale(
             chart_ctrl,
@@ -534,7 +614,7 @@ class BacktestApp:
         chart_ctrl.columnconfigure(1, weight=1)
 
         self.chart_frame = ttk.Frame(top)
-        self.chart_frame.grid(row=7, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
+        self.chart_frame.grid(row=8, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
         self.chart = tk.Canvas(
             self.chart_frame,
             background=CHART_BG,
@@ -555,15 +635,15 @@ class BacktestApp:
         self.chart.bind("<B1-Motion>", self.on_chart_drag_move)
 
         self.text = tk.Text(top, width=90, height=16)
-        self.text.grid(row=8, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
+        self.text.grid(row=9, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
         self.text.configure(state="disabled")
         scroll = ttk.Scrollbar(top, command=self.text.yview)
-        scroll.grid(row=8, column=6, sticky="ns")
+        scroll.grid(row=9, column=6, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
         top.columnconfigure(4, weight=1)
-        top.rowconfigure(7, weight=6)
-        top.rowconfigure(8, weight=2)
+        top.rowconfigure(8, weight=6)
+        top.rowconfigure(9, weight=2)
 
         stats = ttk.Frame(self.tab_pnl, padding=10)
         stats.grid(row=0, column=0, sticky="ew")
@@ -618,12 +698,20 @@ class BacktestApp:
 
     def selected_tag_keys(self):
         selected = []
+        if self.filter_entry_var.get():
+            selected.append("is_entry")
         if self.filter_boast_var.get():
             selected.append("is_boast")
         if self.filter_fear_var.get():
             selected.append("is_fear")
+        if self.filter_greed_var.get():
+            selected.append("is_greed")
         if self.filter_stop_var.get():
             selected.append("is_stop")
+        if self.filter_stop_plan_var.get():
+            selected.append("is_stop_plan")
+        if self.filter_lc_var.get():
+            selected.append("is_lc")
         if self.filter_tp_var.get():
             selected.append("is_tp")
         return selected
@@ -1119,9 +1207,27 @@ class BacktestApp:
                 messagebox.showerror("エラー", "時間クローズは1以上で入力してください")
                 return
 
+        try:
+            limit_offset_pips = float(self.limit_offset_var.get().strip())
+        except ValueError:
+            messagebox.showerror("エラー", "指値位置の値が数値ではありません")
+            return
+        if limit_offset_pips < 0:
+            messagebox.showerror("エラー", "指値位置は0以上で入力してください")
+            return
+        try:
+            limit_expire_min = int(self.limit_expire_var.get().strip())
+        except ValueError:
+            messagebox.showerror("エラー", "指値の有効は分で入力してください")
+            return
+        if limit_expire_min < 1:
+            messagebox.showerror("エラー", "指値の有効は1以上で入力してください")
+            return
+
         stop = stop_pips * PIP_SIZE
         limit = limit_pips * PIP_SIZE
         spread = spread_pips * PIP_SIZE
+        limit_offset = limit_offset_pips * PIP_SIZE
 
         start_utc = start_jst - JST_OFFSET
         end_utc = end_jst - JST_OFFSET
@@ -1142,9 +1248,13 @@ class BacktestApp:
         period_signals, selected_tags = self.filter_signals_by_tags(period_signals)
         if selected_tags is not None:
             label_map = {
+                "is_entry": "新規",
                 "is_boast": "自慢",
                 "is_fear": "恐怖",
-                "is_stop": "損切り",
+                "is_greed": "欲望",
+                "is_stop": "損切",
+                "is_stop_plan": "損切予定",
+                "is_lc": "ロスカ",
                 "is_tp": "利確",
             }
             labels = [label_map.get(key, key) for key in selected_tags]
@@ -1160,36 +1270,68 @@ class BacktestApp:
         end_idx = len(bars) - 1
         results = []
         missing = 0
+        limit_missing = 0
+        limit_cancelled = 0
 
         for signal in period_signals:
             idx = index_by_time.get(signal["time_utc"])
             if idx is None:
                 missing += 1
                 continue
+            direction = signal["action"]
+            entry_type = signal.get("entry_type") or "INSTANT"
+            entry_idx = idx
+            entry_mid = None
+            entry_price = None
+            if entry_type == "LIMIT":
+                base_price = signal.get("entry_price")
+                if base_price is None:
+                    limit_missing += 1
+                    continue
+                if direction == "BUY":
+                    limit_price = base_price - limit_offset
+                else:
+                    limit_price = base_price + limit_offset
+                found = find_limit_entry(
+                    bars,
+                    idx,
+                    end_idx,
+                    direction,
+                    limit_price,
+                    spread,
+                    limit_expire_min,
+                )
+                if not found:
+                    limit_cancelled += 1
+                    continue
+                entry_idx, entry_mid, entry_price = found
+            else:
+                entry_mid = bars[entry_idx]["close"]
+                half = spread / 2.0
+                entry_price = entry_mid + half if direction == "BUY" else entry_mid - half
+
             trade = simulate_trade(
                 bars,
-                idx,
+                entry_idx,
                 end_idx,
-                signal["action"],
+                direction,
                 stop,
                 limit,
                 spread,
                 stop_limit_enabled,
                 time_limit_enabled,
                 time_limit_min,
+                entry_mid=entry_mid,
             )
-            entry_mid = bars[idx]["close"]
-            half = spread / 2.0
-            entry_price = entry_mid + half if signal["action"] == "BUY" else entry_mid - half
             pnl = (
                 trade["exit_price"] - entry_price
-                if signal["action"] == "BUY"
+                if direction == "BUY"
                 else entry_price - trade["exit_price"]
             )
             results.append(
                 {
-                    "action": signal["action"],
-                    "entry_time": signal["time_utc"],
+                    "action": direction,
+                    "entry_time": bars[entry_idx]["time"],
                     "entry_price": entry_price,
                     "exit_time": trade["exit_time"],
                     "exit_price": trade["exit_price"],
@@ -1200,6 +1342,10 @@ class BacktestApp:
 
         if missing:
             self.log(f"足が無いサイン: {missing}")
+        if limit_missing:
+            self.log(f"指値価格なし: {limit_missing}")
+        if limit_cancelled:
+            self.log(f"指値未約定: {limit_cancelled}")
 
         self.draw_chart(bars, results)
         if not results:
@@ -1243,7 +1389,9 @@ class BacktestApp:
         self.log("・サインの時刻は日本時間として9時間引いて計算しています")
         self.log("・エントリーは該当足の終値です")
         self.log("・スプレッドは売買の両側に半分ずつ反映しています")
-        self.log("・幅の入力は 0.01 を 1 として扱っています")
+        self.log("・幅と指値位置の入力は 0.01 を 1 として扱っています")
+        self.log("・指値は指定の位置に達した時点でエントリーします")
+        self.log("・指値は指定分経過で解除します")
         self.log("・時間クローズは指定分経過後の足の終値です")
         self.log("・同じ足で両方に触れた場合は不利な方を採用します")
         self.log("")
