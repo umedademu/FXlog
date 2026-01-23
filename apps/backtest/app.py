@@ -1,6 +1,7 @@
 import calendar
 import csv
 import glob
+import math
 import os
 from datetime import date, datetime, timedelta
 import tkinter as tk
@@ -339,6 +340,39 @@ def load_ohlc_range(data_dir, start_utc, end_utc):
     return bars, index_by_time, errors
 
 
+def calc_rolling_stats(bars, period):
+    closes = [bar["close"] for bar in bars]
+    means = [None] * len(closes)
+    stds = [None] * len(closes)
+    if period <= 0:
+        return means, stds
+    sums = [0.0]
+    sums_sq = [0.0]
+    for price in closes:
+        sums.append(sums[-1] + price)
+        sums_sq.append(sums_sq[-1] + price * price)
+    for idx in range(period - 1, len(closes)):
+        total = sums[idx + 1] - sums[idx + 1 - period]
+        mean = total / period
+        total_sq = sums_sq[idx + 1] - sums_sq[idx + 1 - period]
+        var = total_sq / period - mean * mean
+        if var < 0:
+            var = 0.0
+        means[idx] = mean
+        stds[idx] = math.sqrt(var)
+    return means, stds
+
+
+def calc_deviation_percent(bars, means):
+    devs = [None] * len(bars)
+    for idx, mean in enumerate(means):
+        if mean is None or mean == 0:
+            continue
+        close = bars[idx]["close"]
+        devs[idx] = (close - mean) / mean * 100.0
+    return devs
+
+
 def find_limit_entry(
     bars,
     start_idx,
@@ -518,6 +552,12 @@ class BacktestApp:
         self.filter_lc_var = tk.BooleanVar(value=False)
         self.filter_lc_plan_var = tk.BooleanVar(value=False)
         self.filter_tp_plan_var = tk.BooleanVar(value=False)
+        self.filter_bb_var = tk.BooleanVar(value=False)
+        self.bb_period_var = tk.StringVar(value="20")
+        self.bb_sigma_var = tk.StringVar(value="3")
+        self.filter_ma_dev_var = tk.BooleanVar(value=False)
+        self.ma_period_var = tk.StringVar(value="20")
+        self.ma_dev_var = tk.StringVar(value="0.5")
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -628,8 +668,33 @@ class BacktestApp:
         )
         ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=1, column=7, sticky="w", padx=(8, 0))
 
+        indicator_opts = ttk.Frame(top)
+        indicator_opts.grid(row=7, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ttk.Label(indicator_opts, text="値動きで絞り込み").grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(indicator_opts, text="ボリンジャーバンド", variable=self.filter_bb_var).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Label(indicator_opts, text="期間").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Entry(indicator_opts, textvariable=self.bb_period_var, width=6).grid(row=0, column=3, sticky="w")
+        ttk.Label(indicator_opts, text="シグマ").grid(row=0, column=4, sticky="w", padx=(8, 0))
+        ttk.Entry(indicator_opts, textvariable=self.bb_sigma_var, width=6).grid(row=0, column=5, sticky="w")
+        ttk.Label(indicator_opts, text="買いは下側 / 売りは上側").grid(
+            row=0, column=6, sticky="w", padx=(8, 0)
+        )
+        ttk.Label(indicator_opts, text="").grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(indicator_opts, text="移動平均乖離率", variable=self.filter_ma_dev_var).grid(
+            row=1, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Label(indicator_opts, text="期間").grid(row=1, column=2, sticky="w", padx=(8, 0))
+        ttk.Entry(indicator_opts, textvariable=self.ma_period_var, width=6).grid(row=1, column=3, sticky="w")
+        ttk.Label(indicator_opts, text="しきい値(%)").grid(row=1, column=4, sticky="w", padx=(8, 0))
+        ttk.Entry(indicator_opts, textvariable=self.ma_dev_var, width=6).grid(row=1, column=5, sticky="w")
+        ttk.Label(indicator_opts, text="買いはマイナス以下 / 売りはプラス以上").grid(
+            row=1, column=6, sticky="w", padx=(8, 0)
+        )
+
         chart_ctrl = ttk.Frame(top)
-        chart_ctrl.grid(row=7, column=0, columnspan=6, pady=(4, 0), sticky="ew")
+        chart_ctrl.grid(row=8, column=0, columnspan=6, pady=(4, 0), sticky="ew")
         ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
         self.zoom_scale = ttk.Scale(
             chart_ctrl,
@@ -660,7 +725,7 @@ class BacktestApp:
         chart_ctrl.columnconfigure(1, weight=1)
 
         self.chart_frame = ttk.Frame(top)
-        self.chart_frame.grid(row=8, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
+        self.chart_frame.grid(row=9, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
         self.chart = tk.Canvas(
             self.chart_frame,
             background=CHART_BG,
@@ -681,15 +746,15 @@ class BacktestApp:
         self.chart.bind("<B1-Motion>", self.on_chart_drag_move)
 
         self.text = tk.Text(top, width=90, height=16)
-        self.text.grid(row=9, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
+        self.text.grid(row=10, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
         self.text.configure(state="disabled")
         scroll = ttk.Scrollbar(top, command=self.text.yview)
-        scroll.grid(row=9, column=6, sticky="ns")
+        scroll.grid(row=10, column=6, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
         top.columnconfigure(4, weight=1)
-        top.rowconfigure(8, weight=6)
-        top.rowconfigure(9, weight=2)
+        top.rowconfigure(9, weight=6)
+        top.rowconfigure(10, weight=2)
 
         stats = ttk.Frame(self.tab_pnl, padding=10)
         stats.grid(row=0, column=0, sticky="ew")
@@ -808,6 +873,48 @@ class BacktestApp:
             if any(tags.get(key) for key in selected):
                 filtered.append(item)
         return filtered, selected
+
+    def filter_signals_by_bollinger(self, signals, bars, index_by_time, means, stds, sigma):
+        filtered = []
+        for item in signals:
+            idx = index_by_time.get(item["time_utc"])
+            if idx is None:
+                filtered.append(item)
+                continue
+            mean = means[idx]
+            std = stds[idx]
+            if mean is None or std is None:
+                continue
+            upper = mean + sigma * std
+            lower = mean - sigma * std
+            bar = bars[idx]
+            if item["action"] == "BUY":
+                if bar["low"] <= lower:
+                    filtered.append(item)
+            else:
+                if bar["high"] >= upper:
+                    filtered.append(item)
+        return filtered
+
+    def filter_signals_by_ma_dev(self, signals, index_by_time, devs, threshold):
+        if threshold <= 0:
+            return list(signals)
+        filtered = []
+        for item in signals:
+            idx = index_by_time.get(item["time_utc"])
+            if idx is None:
+                filtered.append(item)
+                continue
+            dev = devs[idx]
+            if dev is None:
+                continue
+            if item["action"] == "BUY":
+                if dev <= -threshold:
+                    filtered.append(item)
+            else:
+                if dev >= threshold:
+                    filtered.append(item)
+        return filtered
 
     def display_time(self, dt):
         if self.timezone_var.get() == "JST":
@@ -1319,6 +1426,47 @@ class BacktestApp:
             messagebox.showerror("エラー", "指値の有効は1以上で入力してください")
             return
 
+        bb_enabled = bool(self.filter_bb_var.get())
+        ma_dev_enabled = bool(self.filter_ma_dev_var.get())
+        bb_period = None
+        bb_sigma = None
+        ma_period = None
+        ma_threshold = None
+        if bb_enabled:
+            try:
+                bb_period = int(self.bb_period_var.get().strip())
+            except ValueError:
+                messagebox.showerror("エラー", "ボリンジャーバンドの期間は数値で入力してください")
+                return
+            if bb_period < 2:
+                messagebox.showerror("エラー", "ボリンジャーバンドの期間は2以上で入力してください")
+                return
+            try:
+                bb_sigma = float(self.bb_sigma_var.get().strip())
+            except ValueError:
+                messagebox.showerror("エラー", "ボリンジャーバンドのシグマは数値で入力してください")
+                return
+            if bb_sigma <= 0:
+                messagebox.showerror("エラー", "ボリンジャーバンドのシグマは0より大きくしてください")
+                return
+        if ma_dev_enabled:
+            try:
+                ma_period = int(self.ma_period_var.get().strip())
+            except ValueError:
+                messagebox.showerror("エラー", "移動平均乖離率の期間は数値で入力してください")
+                return
+            if ma_period < 2:
+                messagebox.showerror("エラー", "移動平均乖離率の期間は2以上で入力してください")
+                return
+            try:
+                ma_threshold = float(self.ma_dev_var.get().strip())
+            except ValueError:
+                messagebox.showerror("エラー", "移動平均乖離率のしきい値は数値で入力してください")
+                return
+            if ma_threshold < 0:
+                messagebox.showerror("エラー", "移動平均乖離率のしきい値は0以上で入力してください")
+                return
+
         stop = stop_pips * PIP_SIZE
         limit = limit_pips * PIP_SIZE
         spread = spread_pips * PIP_SIZE
@@ -1344,6 +1492,34 @@ class BacktestApp:
         if selected_tags is not None:
             labels = [REASON_LABELS.get(key, key) for key in selected_tags]
             self.log(f"理由絞り込み: {' / '.join(labels)} -> {len(period_signals)}")
+
+        if bb_enabled or ma_dev_enabled:
+            stats_cache = {}
+
+            def get_stats(period):
+                stats = stats_cache.get(period)
+                if stats is None:
+                    stats = calc_rolling_stats(bars, period)
+                    stats_cache[period] = stats
+                return stats
+
+            if bb_enabled:
+                bb_means, bb_stds = get_stats(bb_period)
+                period_signals = self.filter_signals_by_bollinger(
+                    period_signals, bars, index_by_time, bb_means, bb_stds, bb_sigma
+                )
+                self.log(
+                    f"ボリンジャーバンド絞り込み: 期間{bb_period} シグマ{bb_sigma} -> {len(period_signals)}"
+                )
+            if ma_dev_enabled:
+                ma_means, _ma_stds = get_stats(ma_period)
+                ma_devs = calc_deviation_percent(bars, ma_means)
+                period_signals = self.filter_signals_by_ma_dev(
+                    period_signals, index_by_time, ma_devs, ma_threshold
+                )
+                self.log(
+                    f"移動平均乖離率絞り込み: 期間{ma_period} しきい値{ma_threshold}% -> {len(period_signals)}"
+                )
 
         if not period_signals:
             self.draw_chart(bars, [])
