@@ -31,6 +31,9 @@ CHART_TEXT = "#333333"
 CHART_AXIS = "#666666"
 CHART_UP = "#2e7d32"
 CHART_DOWN = "#c62828"
+CHART_MA = "#1565c0"
+CHART_BB = "#f57c00"
+CHART_BB_CENTER = "#607d8b"
 CHART_LEFT_PAD = 10
 CHART_RIGHT_PAD = 80
 CHART_TOP_PAD = 8
@@ -536,6 +539,8 @@ class BacktestApp:
         self.timezone_var = tk.StringVar(value="JST")
         self.stop_limit_enabled_var = tk.BooleanVar(value=True)
         self.time_limit_enabled_var = tk.BooleanVar(value=True)
+        self.allow_same_dir_var = tk.BooleanVar(value=True)
+        self.allow_opp_dir_var = tk.BooleanVar(value=True)
         self.time_limit_var = tk.StringVar(value="30")
         self.filter_boast_var = tk.BooleanVar(value=False)
         self.filter_fear_var = tk.BooleanVar(value=False)
@@ -558,6 +563,8 @@ class BacktestApp:
         self.filter_ma_dev_var = tk.BooleanVar(value=False)
         self.ma_period_var = tk.StringVar(value="20")
         self.ma_dev_var = tk.StringVar(value="0.5")
+        self.indicator_cache = {}
+        self.indicator_cache_bars_id = None
 
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -617,6 +624,12 @@ class BacktestApp:
         )
         ttk.Entry(exit_opts, textvariable=self.time_limit_var, width=6).grid(row=0, column=2, padx=(6, 2))
         ttk.Label(exit_opts, text="分経過でクローズ").grid(row=0, column=3, sticky="w")
+        ttk.Checkbutton(exit_opts, text="同方向の追加", variable=self.allow_same_dir_var).grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Checkbutton(exit_opts, text="逆方向の同時保有", variable=self.allow_opp_dir_var).grid(
+            row=1, column=1, sticky="w", padx=(12, 0), pady=(4, 0)
+        )
 
         limit_opts = ttk.Frame(top)
         limit_opts.grid(row=5, column=0, columnspan=6, sticky="w", pady=(4, 0))
@@ -1042,6 +1055,29 @@ class BacktestApp:
             return
         self.chart_data = (bars, results)
 
+        show_bb = bool(self.filter_bb_var.get())
+        show_ma = bool(self.filter_ma_dev_var.get())
+        bb_period = None
+        bb_sigma = None
+        ma_period = None
+        if show_bb:
+            try:
+                bb_period = int(self.bb_period_var.get().strip())
+                bb_sigma = float(self.bb_sigma_var.get().strip())
+            except ValueError:
+                show_bb = False
+            else:
+                if bb_period < 2 or bb_sigma <= 0:
+                    show_bb = False
+        if show_ma:
+            try:
+                ma_period = int(self.ma_period_var.get().strip())
+            except ValueError:
+                show_ma = False
+            else:
+                if ma_period < 2:
+                    show_ma = False
+
         width = self.chart.winfo_width()
         height = self.chart.winfo_height()
         if width <= 1:
@@ -1093,6 +1129,58 @@ class BacktestApp:
         if max_p == min_p:
             max_p += PIP_SIZE
             min_p -= PIP_SIZE
+
+        bb_means = None
+        bb_stds = None
+        ma_means = None
+        if show_bb or show_ma:
+            if self.indicator_cache_bars_id != id(bars):
+                self.indicator_cache = {}
+                self.indicator_cache_bars_id = id(bars)
+
+            def get_stats(period):
+                stats = self.indicator_cache.get(period)
+                if stats is None:
+                    stats = calc_rolling_stats(bars, period)
+                    self.indicator_cache[period] = stats
+                return stats
+
+            if show_bb:
+                bb_means, bb_stds = get_stats(bb_period)
+            if show_ma:
+                ma_means, _ma_stds = get_stats(ma_period)
+
+            min_ind = None
+            max_ind = None
+            if show_bb and bb_means and bb_stds:
+                for idx in range(start_idx, end_idx + 1):
+                    mean = bb_means[idx]
+                    std = bb_stds[idx]
+                    if mean is None or std is None:
+                        continue
+                    upper = mean + bb_sigma * std
+                    lower = mean - bb_sigma * std
+                    if min_ind is None or lower < min_ind:
+                        min_ind = lower
+                    if max_ind is None or upper > max_ind:
+                        max_ind = upper
+            if show_ma and ma_means:
+                for idx in range(start_idx, end_idx + 1):
+                    mean = ma_means[idx]
+                    if mean is None:
+                        continue
+                    if min_ind is None or mean < min_ind:
+                        min_ind = mean
+                    if max_ind is None or mean > max_ind:
+                        max_ind = mean
+            if min_ind is not None and max_ind is not None:
+                if min_ind < min_p:
+                    min_p = min_ind
+                if max_ind > max_p:
+                    max_p = max_ind
+                if max_p == min_p:
+                    max_p += PIP_SIZE
+                    min_p -= PIP_SIZE
 
         def price_to_y(price):
             return top + (max_p - price) / (max_p - min_p) * plot_h
@@ -1151,6 +1239,43 @@ class BacktestApp:
                 fill=color,
                 outline=color,
             )
+
+        def draw_series(value_for_index, color, width=1, dash=None):
+            last = None
+            for idx in range(start_idx, end_idx + 1):
+                value = value_for_index(idx)
+                if value is None:
+                    last = None
+                    continue
+                x = index_to_x(idx)
+                y = price_to_y(value)
+                if last is not None:
+                    self.chart.create_line(last[0], last[1], x, y, fill=color, width=width, dash=dash)
+                last = (x, y)
+
+        if show_bb and bb_means and bb_stds:
+            draw_series(lambda idx: bb_means[idx], CHART_BB_CENTER)
+            draw_series(
+                lambda idx: (
+                    bb_means[idx] + bb_sigma * bb_stds[idx]
+                    if bb_means[idx] is not None and bb_stds[idx] is not None
+                    else None
+                ),
+                CHART_BB,
+                dash=(3, 3),
+            )
+            draw_series(
+                lambda idx: (
+                    bb_means[idx] - bb_sigma * bb_stds[idx]
+                    if bb_means[idx] is not None and bb_stds[idx] is not None
+                    else None
+                ),
+                CHART_BB,
+                dash=(3, 3),
+            )
+
+        if show_ma and ma_means and (not show_bb or ma_period != bb_period):
+            draw_series(lambda idx: ma_means[idx], CHART_MA, width=2)
 
         index_by_time = {bar["time"]: idx for idx, bar in enumerate(bars)}
         for item in results:
@@ -1408,6 +1533,8 @@ class BacktestApp:
             if time_limit_min < 1:
                 messagebox.showerror("エラー", "時間クローズは1以上で入力してください")
                 return
+        allow_same_dir = bool(self.allow_same_dir_var.get())
+        allow_opp_dir = bool(self.allow_opp_dir_var.get())
 
         try:
             limit_offset_pips = float(self.limit_offset_var.get().strip())
@@ -1534,8 +1661,11 @@ class BacktestApp:
         missing = 0
         limit_missing = 0
         limit_cancelled = 0
+        skip_same = 0
+        skip_opp = 0
+        candidates = []
 
-        for signal in period_signals:
+        for order, signal in enumerate(period_signals):
             idx = index_by_time.get(signal["time_utc"])
             if idx is None:
                 missing += 1
@@ -1574,36 +1704,65 @@ class BacktestApp:
                 half = spread / 2.0
                 entry_price = entry_mid + half if direction == "BUY" else entry_mid - half
 
+            candidates.append(
+                {
+                    "order": order,
+                    "direction": direction,
+                    "entry_idx": entry_idx,
+                    "entry_time": bars[entry_idx]["time"],
+                    "entry_mid": entry_mid,
+                    "entry_price": entry_price,
+                    "tags": tags,
+                }
+            )
+
+        candidates.sort(key=lambda item: (item["entry_time"], item["order"]))
+        open_positions = []
+        for item in candidates:
+            entry_time = item["entry_time"]
+            if open_positions:
+                open_positions = [pos for pos in open_positions if pos["exit_time"] > entry_time]
+            has_same = any(pos["direction"] == item["direction"] for pos in open_positions)
+            has_opp = any(pos["direction"] != item["direction"] for pos in open_positions)
+            if (not allow_same_dir and has_same) or (not allow_opp_dir and has_opp):
+                if not allow_same_dir and has_same:
+                    skip_same += 1
+                elif not allow_opp_dir and has_opp:
+                    skip_opp += 1
+                continue
+
             trade = simulate_trade(
                 bars,
-                entry_idx,
+                item["entry_idx"],
                 end_idx,
-                direction,
+                item["direction"],
                 stop,
                 limit,
                 spread,
                 stop_limit_enabled,
                 time_limit_enabled,
                 time_limit_min,
-                entry_mid=entry_mid,
+                entry_mid=item["entry_mid"],
             )
+            entry_price = item["entry_price"]
             pnl = (
                 trade["exit_price"] - entry_price
-                if direction == "BUY"
+                if item["direction"] == "BUY"
                 else entry_price - trade["exit_price"]
             )
             results.append(
                 {
-                    "action": direction,
-                    "entry_time": bars[entry_idx]["time"],
+                    "action": item["direction"],
+                    "entry_time": item["entry_time"],
                     "entry_price": entry_price,
                     "exit_time": trade["exit_time"],
                     "exit_price": trade["exit_price"],
                     "exit_reason": trade["exit_reason"],
                     "pnl": pnl,
-                    "tags": tags,
+                    "tags": item["tags"],
                 }
             )
+            open_positions.append({"direction": item["direction"], "exit_time": trade["exit_time"]})
 
         if missing:
             self.log(f"足が無いサイン: {missing}")
@@ -1611,6 +1770,10 @@ class BacktestApp:
             self.log(f"指値価格なし: {limit_missing}")
         if limit_cancelled:
             self.log(f"指値未約定: {limit_cancelled}")
+        if skip_same:
+            self.log(f"同方向の追加を許可しないため除外: {skip_same}")
+        if skip_opp:
+            self.log(f"逆方向の同時保有を許可しないため除外: {skip_opp}")
 
         self.draw_chart(bars, results)
         if not results:
