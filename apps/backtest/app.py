@@ -44,6 +44,22 @@ CHART_MAX_BAR_STEP = 20
 PIP_SIZE = 0.01
 EQUITY_POINT_RADIUS = 3
 
+REASON_ITEMS = (
+    ("is_entry", "新規"),
+    ("is_entry_plan", "新規予定"),
+    ("is_boast", "自慢"),
+    ("is_fear", "恐怖"),
+    ("is_fear_plan", "恐怖予定"),
+    ("is_greed", "欲望"),
+    ("is_stop", "損切"),
+    ("is_stop_plan", "損切予定"),
+    ("is_lc", "ロスカ"),
+    ("is_lc_plan", "ロスカ予定"),
+    ("is_tp", "利確"),
+    ("is_tp_plan", "利確予定"),
+)
+REASON_LABELS = dict(REASON_ITEMS)
+
 
 def parse_datetime_text(text, is_end=False):
     text = (text or "").strip()
@@ -696,6 +712,30 @@ class BacktestApp:
         ttk.Label(stats, text="プロフィットファクター").grid(row=4, column=0, sticky="w")
         ttk.Label(stats, textvariable=self.pf_var).grid(row=4, column=1, sticky="w", padx=(8, 20))
 
+        self.reason_pnl_vars = {key: tk.StringVar(value="-") for key, _label in REASON_ITEMS}
+        self.reason_count_vars = {key: tk.StringVar(value="-") for key, _label in REASON_ITEMS}
+        reason_frame = ttk.LabelFrame(stats, text="理由別の損益と件数")
+        reason_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        for col in range(6):
+            reason_frame.columnconfigure(col, weight=0)
+        rows_per_col = (len(REASON_ITEMS) + 1) // 2
+        ttk.Label(reason_frame, text="").grid(row=0, column=0, sticky="w", padx=(6, 2), pady=2)
+        ttk.Label(reason_frame, text="損益").grid(row=0, column=1, sticky="w", padx=(4, 2), pady=2)
+        ttk.Label(reason_frame, text="件数").grid(row=0, column=2, sticky="w", padx=(2, 8), pady=2)
+        ttk.Label(reason_frame, text="").grid(row=0, column=3, sticky="w", padx=(6, 2), pady=2)
+        ttk.Label(reason_frame, text="損益").grid(row=0, column=4, sticky="w", padx=(4, 2), pady=2)
+        ttk.Label(reason_frame, text="件数").grid(row=0, column=5, sticky="w", padx=(2, 8), pady=2)
+        for idx, (key, label) in enumerate(REASON_ITEMS):
+            row = idx % rows_per_col + 1
+            col = (idx // rows_per_col) * 3
+            ttk.Label(reason_frame, text=label).grid(row=row, column=col, sticky="w", padx=(6, 2), pady=2)
+            ttk.Label(reason_frame, textvariable=self.reason_pnl_vars[key]).grid(
+                row=row, column=col + 1, sticky="w", padx=(4, 2), pady=2
+            )
+            ttk.Label(reason_frame, textvariable=self.reason_count_vars[key]).grid(
+                row=row, column=col + 2, sticky="w", padx=(2, 8), pady=2
+            )
+
         self.equity_chart = tk.Canvas(
             self.tab_pnl,
             background=CHART_BG,
@@ -725,6 +765,10 @@ class BacktestApp:
         self.trade_count_var.set("-")
         self.win_rate_var.set("-")
         self.pf_var.set("-")
+        for var in self.reason_pnl_vars.values():
+            var.set("-")
+        for var in self.reason_count_vars.values():
+            var.set("-")
 
     def selected_tag_keys(self):
         selected = []
@@ -1189,6 +1233,19 @@ class BacktestApp:
         self.win_rate_var.set(win_text)
         self.pf_var.set(pf_text)
 
+    def update_reason_pnls(self, results):
+        sums = {key: 0.0 for key, _label in REASON_ITEMS}
+        counts = {key: 0 for key, _label in REASON_ITEMS}
+        for item in results:
+            tags = item.get("tags") or {}
+            for key in sums:
+                if tags.get(key):
+                    sums[key] += item["pnl"] / PIP_SIZE
+                    counts[key] += 1
+        for key, _label in REASON_ITEMS:
+            self.reason_pnl_vars[key].set(format_pips(sums[key]))
+            self.reason_count_vars[key].set(str(counts[key]))
+
     def run_backtest(self):
         self.clear_log()
         self.clear_chart()
@@ -1285,27 +1342,14 @@ class BacktestApp:
 
         period_signals, selected_tags = self.filter_signals_by_tags(period_signals)
         if selected_tags is not None:
-            label_map = {
-                "is_entry": "新規",
-                "is_entry_plan": "新規予定",
-                "is_boast": "自慢",
-                "is_fear": "恐怖",
-                "is_fear_plan": "恐怖予定",
-                "is_greed": "欲望",
-                "is_stop": "損切",
-                "is_stop_plan": "損切予定",
-                "is_lc": "ロスカ",
-                "is_lc_plan": "ロスカ予定",
-                "is_tp": "利確",
-                "is_tp_plan": "利確予定",
-            }
-            labels = [label_map.get(key, key) for key in selected_tags]
+            labels = [REASON_LABELS.get(key, key) for key in selected_tags]
             self.log(f"理由絞り込み: {' / '.join(labels)} -> {len(period_signals)}")
 
         if not period_signals:
             self.draw_chart(bars, [])
             self.draw_equity_chart([])
             self.update_stats([])
+            self.update_reason_pnls([])
             self.log("期間内のサインがありません")
             return
 
@@ -1322,7 +1366,7 @@ class BacktestApp:
                 continue
             direction = signal["action"]
             entry_type = signal.get("entry_type") or "INSTANT"
-            tags = signal.get("tags") or {}
+            tags = dict(signal.get("tags") or {})
             entry_idx = idx
             entry_mid = None
             entry_price = None
@@ -1381,6 +1425,7 @@ class BacktestApp:
                     "exit_price": trade["exit_price"],
                     "exit_reason": trade["exit_reason"],
                     "pnl": pnl,
+                    "tags": tags,
                 }
             )
 
@@ -1395,6 +1440,7 @@ class BacktestApp:
         if not results:
             self.draw_equity_chart([])
             self.update_stats([])
+            self.update_reason_pnls([])
             self.log("約定できたサインがありません")
             return
 
@@ -1406,6 +1452,7 @@ class BacktestApp:
             equity_points.append({"time": item["exit_time"], "value": equity})
         self.draw_equity_chart(equity_points)
         self.update_stats(results_sorted)
+        self.update_reason_pnls(results_sorted)
 
         total = len(results)
         wins = sum(1 for r in results if r["pnl"] > 0)
