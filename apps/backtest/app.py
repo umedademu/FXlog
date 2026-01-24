@@ -573,8 +573,16 @@ class BacktestApp:
         self.spread_var = tk.StringVar(value="1")
         self.info_var = tk.StringVar(value="サイン件数: -")
 
-        self.notebook = ttk.Notebook(root)
-        self.notebook.grid(row=0, column=0, sticky="nsew")
+        main = ttk.Frame(root)
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(1, weight=1)
+
+        params = ttk.Frame(main, padding=6)
+        params.grid(row=0, column=0, sticky="ew")
+
+        self.notebook = ttk.Notebook(main)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
         self.tab_chart = ttk.Frame(self.notebook)
         self.tab_pnl = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_chart, text="チャート")
@@ -584,37 +592,34 @@ class BacktestApp:
         self.tab_pnl.rowconfigure(1, weight=1)
         self.tab_pnl.columnconfigure(0, weight=1)
 
-        top = ttk.Frame(self.tab_chart, padding=6)
-        top.grid(sticky="nsew")
+        ttk.Label(params, textvariable=self.info_var).grid(row=0, column=0, columnspan=6, sticky="w")
 
-        ttk.Label(top, textvariable=self.info_var).grid(row=0, column=0, columnspan=6, sticky="w")
-
-        ttk.Label(top, text="開始(日本時間)").grid(row=1, column=0, sticky="w", pady=(8, 2))
-        ttk.Entry(top, textvariable=self.start_var, width=22).grid(row=1, column=1, sticky="w", pady=(8, 2))
-        ttk.Button(top, text="日付", command=lambda: self.open_calendar(self.start_var)).grid(
+        ttk.Label(params, text="開始(日本時間)").grid(row=1, column=0, sticky="w", pady=(8, 2))
+        ttk.Entry(params, textvariable=self.start_var, width=22).grid(row=1, column=1, sticky="w", pady=(8, 2))
+        ttk.Button(params, text="日付", command=lambda: self.open_calendar(self.start_var)).grid(
             row=1, column=2, sticky="w", padx=(6, 0), pady=(8, 2)
         )
-        ttk.Label(top, text="終了(日本時間)").grid(row=1, column=3, sticky="w", padx=(12, 0), pady=(8, 2))
-        end_frame = ttk.Frame(top)
+        ttk.Label(params, text="終了(日本時間)").grid(row=1, column=3, sticky="w", padx=(12, 0), pady=(8, 2))
+        end_frame = ttk.Frame(params)
         end_frame.grid(row=1, column=4, sticky="w", pady=(8, 2))
         ttk.Entry(end_frame, textvariable=self.end_var, width=22).grid(row=0, column=0, sticky="w")
         ttk.Button(end_frame, text="日付", command=lambda: self.open_calendar(self.end_var)).grid(
             row=0, column=1, sticky="w", padx=(6, 0)
         )
 
-        ttk.Label(top, text="ストップ幅(0.01=1)").grid(row=2, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.stop_var, width=12).grid(row=2, column=1, sticky="w")
-        ttk.Label(top, text="リミット幅(0.01=1)").grid(row=2, column=2, sticky="w", padx=(12, 0))
-        ttk.Entry(top, textvariable=self.limit_var, width=12).grid(row=2, column=3, sticky="w")
+        ttk.Label(params, text="ストップ幅(0.01=1)").grid(row=2, column=0, sticky="w")
+        ttk.Entry(params, textvariable=self.stop_var, width=12).grid(row=2, column=1, sticky="w")
+        ttk.Label(params, text="リミット幅(0.01=1)").grid(row=2, column=2, sticky="w", padx=(12, 0))
+        ttk.Entry(params, textvariable=self.limit_var, width=12).grid(row=2, column=3, sticky="w")
 
-        ttk.Label(top, text="スプレッド(0.01=1)").grid(row=3, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.spread_var, width=12).grid(row=3, column=1, sticky="w")
+        ttk.Label(params, text="スプレッド(0.01=1)").grid(row=3, column=0, sticky="w")
+        ttk.Entry(params, textvariable=self.spread_var, width=12).grid(row=3, column=1, sticky="w")
 
-        self.run_btn = ttk.Button(top, text="実行", command=self.run_backtest)
+        self.run_btn = ttk.Button(params, text="実行", command=self.run_backtest)
         self.run_btn.grid(row=3, column=2, sticky="w", padx=(12, 0))
-        ttk.Button(top, text="再読込", command=self.reload_signals).grid(row=3, column=3, sticky="w")
+        ttk.Button(params, text="再読込", command=self.reload_signals).grid(row=3, column=3, sticky="w")
 
-        exit_opts = ttk.Frame(top)
+        exit_opts = ttk.Frame(params)
         exit_opts.grid(row=4, column=0, columnspan=6, sticky="w", pady=(4, 0))
         ttk.Checkbutton(exit_opts, text="ストップ/リミットを使う", variable=self.stop_limit_enabled_var).grid(
             row=0, column=0, sticky="w"
@@ -631,7 +636,7 @@ class BacktestApp:
             row=1, column=1, sticky="w", padx=(12, 0), pady=(4, 0)
         )
 
-        limit_opts = ttk.Frame(top)
+        limit_opts = ttk.Frame(params)
         limit_opts.grid(row=5, column=0, columnspan=6, sticky="w", pady=(4, 0))
         ttk.Label(limit_opts, text="指値位置(0.01=1)").grid(row=0, column=0, sticky="w")
         ttk.Entry(limit_opts, textvariable=self.limit_offset_var, width=6).grid(row=0, column=1, padx=(6, 12))
@@ -639,7 +644,7 @@ class BacktestApp:
         ttk.Entry(limit_opts, textvariable=self.limit_expire_var, width=6).grid(row=0, column=3, padx=(6, 2))
         ttk.Label(limit_opts, text="分経過で解除").grid(row=0, column=4, sticky="w")
 
-        filter_opts = ttk.Frame(top)
+        filter_opts = ttk.Frame(params)
         filter_opts.grid(row=6, column=0, columnspan=6, sticky="w", pady=(4, 0))
         ttk.Label(filter_opts, text="理由で絞り込み").grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(filter_opts, text="新規", variable=self.filter_entry_var).grid(
@@ -681,7 +686,7 @@ class BacktestApp:
         )
         ttk.Label(filter_opts, text="(どれかに該当で対象)").grid(row=1, column=7, sticky="w", padx=(8, 0))
 
-        indicator_opts = ttk.Frame(top)
+        indicator_opts = ttk.Frame(params)
         indicator_opts.grid(row=7, column=0, columnspan=6, sticky="w", pady=(4, 0))
         ttk.Label(indicator_opts, text="値動きで絞り込み").grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(indicator_opts, text="ボリンジャーバンド", variable=self.filter_bb_var).grid(
@@ -706,8 +711,13 @@ class BacktestApp:
             row=1, column=6, sticky="w", padx=(8, 0)
         )
 
-        chart_ctrl = ttk.Frame(top)
-        chart_ctrl.grid(row=8, column=0, columnspan=6, pady=(4, 0), sticky="ew")
+        params.columnconfigure(4, weight=1)
+
+        chart_view = ttk.Frame(self.tab_chart, padding=6)
+        chart_view.grid(row=0, column=0, sticky="nsew")
+
+        chart_ctrl = ttk.Frame(chart_view)
+        chart_ctrl.grid(row=0, column=0, columnspan=2, pady=(4, 0), sticky="ew")
         ttk.Label(chart_ctrl, text="表示倍率").grid(row=0, column=0, sticky="w")
         self.zoom_scale = ttk.Scale(
             chart_ctrl,
@@ -737,8 +747,8 @@ class BacktestApp:
         ).grid(row=0, column=7, sticky="w")
         chart_ctrl.columnconfigure(1, weight=1)
 
-        self.chart_frame = ttk.Frame(top)
-        self.chart_frame.grid(row=9, column=0, columnspan=6, pady=(2, 0), sticky="nsew")
+        self.chart_frame = ttk.Frame(chart_view)
+        self.chart_frame.grid(row=1, column=0, columnspan=2, pady=(2, 0), sticky="nsew")
         self.chart = tk.Canvas(
             self.chart_frame,
             background=CHART_BG,
@@ -758,16 +768,16 @@ class BacktestApp:
         self.chart.bind("<ButtonPress-1>", self.on_chart_drag_start)
         self.chart.bind("<B1-Motion>", self.on_chart_drag_move)
 
-        self.text = tk.Text(top, width=90, height=16)
-        self.text.grid(row=10, column=0, columnspan=6, pady=(12, 0), sticky="nsew")
+        self.text = tk.Text(chart_view, width=90, height=16)
+        self.text.grid(row=2, column=0, pady=(12, 0), sticky="nsew")
         self.text.configure(state="disabled")
-        scroll = ttk.Scrollbar(top, command=self.text.yview)
-        scroll.grid(row=10, column=6, sticky="ns")
+        scroll = ttk.Scrollbar(chart_view, command=self.text.yview)
+        scroll.grid(row=2, column=1, sticky="ns")
         self.text.configure(yscrollcommand=scroll.set)
 
-        top.columnconfigure(4, weight=1)
-        top.rowconfigure(9, weight=6)
-        top.rowconfigure(10, weight=2)
+        chart_view.columnconfigure(0, weight=1)
+        chart_view.rowconfigure(1, weight=6)
+        chart_view.rowconfigure(2, weight=2)
 
         stats = ttk.Frame(self.tab_pnl, padding=10)
         stats.grid(row=0, column=0, sticky="ew")
