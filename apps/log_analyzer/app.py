@@ -377,29 +377,19 @@ class LogAnalyzerApp:
             messagebox.showerror("エラー", "日付フォーマットが正しくありません")
             return []
 
-        # 対象期間に関係しそうなファイルだけを拾う（開始日の前日も含める）
-        file_start_dt = start_dt - timedelta(days=1)
-        file_end_dt = end_dt
-
+        # 対象期間に関係しそうなファイルだけを拾う（ファイル名は参考にしない）
         log_files = []
         for f in os.listdir(self.logs_dir):
             if not f.endswith(".jsonl"):
                 continue
-            match = re.match(r"^usdjpy_\d+_(\d{8})\.jsonl$", f)
-            if not match:
+            file_path = os.path.join(self.logs_dir, f)
+            max_dt = self.get_file_max_date(file_path)
+            # ファイル内の最新日時が開始日より前なら除外
+            if max_dt and max_dt < start_dt:
                 continue
-            file_date_str = match.group(1)
-            try:
-                file_dt = datetime.strptime(file_date_str, "%Y%m%d")
-            except ValueError:
-                continue
-            if file_start_dt.date() <= file_dt.date() <= file_end_dt.date():
-                log_files.append((file_dt, f))
+            log_files.append(f)
 
-        # 日付順に並べる（読み込み順は結果に影響しないが見通しのため）
-        log_files.sort(key=lambda x: x[0])
-
-        for _, log_file in log_files:
+        for log_file in log_files:
 
             file_path = os.path.join(self.logs_dir, log_file)
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -452,6 +442,25 @@ class LogAnalyzerApp:
         if match:
             year, month, day, hour, minute = match.groups()
             return datetime(int(year), int(month), int(day), int(hour), int(minute))
+        return None
+
+    def get_file_max_date(self, file_path):
+        """ファイル内の最新日時を取得（最初の有効行）"""
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    posted_at = data.get("posted_at", "")
+                    post_dt = self.parse_posted_at(posted_at)
+                    if post_dt:
+                        return post_dt
+        except OSError:
+            return None
         return None
 
     def is_weekday_hour(self, post_dt):
