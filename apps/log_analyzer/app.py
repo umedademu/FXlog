@@ -1,6 +1,6 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
-from datetime import date, datetime
+from tkinter import ttk, messagebox, scrolledtext, filedialog
+from datetime import date, datetime, timedelta
 import calendar
 import json
 import os
@@ -11,7 +11,7 @@ class LogAnalyzerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("ドル円スレ ログ解析ツール")
-        self.root.geometry("500x400")
+        self.root.geometry("800x700")
         self.root.resizable(True, True)
 
         # ログディレクトリのパス
@@ -105,6 +105,45 @@ class LogAnalyzerApp:
             command=self.run_analysis
         )
         self.run_button.pack(fill=tk.X, pady=10)
+
+        # 結果表示エリア（同一ウィンドウ内）
+        result_frame = ttk.LabelFrame(main_frame, text="抽出結果", padding=10)
+        result_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        result_top = ttk.Frame(result_frame)
+        result_top.pack(fill=tk.X, pady=(0, 8))
+
+        self.result_count_var = tk.StringVar(value="抽出件数: 0件")
+        self.result_count_label = ttk.Label(result_top, textvariable=self.result_count_var)
+        self.result_count_label.pack(side=tk.LEFT)
+
+        display_frame = ttk.Frame(result_top)
+        display_frame.pack(side=tk.RIGHT)
+
+        ttk.Label(display_frame, text="表示上限:").pack(side=tk.LEFT)
+        self.display_limit = tk.IntVar(value=200)
+        display_spin = ttk.Spinbox(
+            display_frame,
+            from_=10,
+            to=5000,
+            textvariable=self.display_limit,
+            width=6
+        )
+        display_spin.pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(display_frame, text="クリア", command=self.clear_results).pack(side=tk.LEFT, padx=5)
+        ttk.Button(display_frame, text="コピー", command=self.copy_results).pack(side=tk.LEFT, padx=5)
+        ttk.Button(display_frame, text="保存", command=self.save_results).pack(side=tk.LEFT)
+
+        self.result_text = scrolledtext.ScrolledText(
+            result_frame,
+            wrap=tk.NONE,
+            font=("MS Gothic", 9)
+        )
+        self.result_text.pack(fill=tk.BOTH, expand=True)
+        self.result_text.config(state=tk.DISABLED)
+
+        self.last_posts = []
 
     def show_calendar(self, date_var):
         """カレンダーダイアログを表示"""
@@ -215,6 +254,7 @@ class LogAnalyzerApp:
         self.run_button.config(state=tk.NORMAL)
 
         if not posts:
+            self.clear_results()
             messagebox.showinfo("結果", "指定された期間内のログが見つかりませんでした")
             return
 
@@ -242,20 +282,29 @@ class LogAnalyzerApp:
             messagebox.showerror("エラー", "日付フォーマットが正しくありません")
             return []
 
-        # 開始日からファイルを読み込む（ファイル名はYYYYMMDD形式）
-        start_date_str = start_dt.strftime("%Y%m%d")
+        # 対象期間に関係しそうなファイルだけを拾う（開始日の前日も含める）
+        file_start_dt = start_dt - timedelta(days=1)
+        file_end_dt = end_dt
 
-        # ログディレクトリ内のjsonlファイルを取得
-        log_files = sorted([
-            f for f in os.listdir(self.logs_dir)
-            if f.endswith('.jsonl') and f >= f"usdjpy_{start_date_str}"
-        ])
+        log_files = []
+        for f in os.listdir(self.logs_dir):
+            if not f.endswith(".jsonl"):
+                continue
+            match = re.match(r"^usdjpy_\d+_(\d{8})\.jsonl$", f)
+            if not match:
+                continue
+            file_date_str = match.group(1)
+            try:
+                file_dt = datetime.strptime(file_date_str, "%Y%m%d")
+            except ValueError:
+                continue
+            if file_start_dt.date() <= file_dt.date() <= file_end_dt.date():
+                log_files.append((file_dt, f))
 
-        end_reached = False
+        # 日付順に並べる（読み込み順は結果に影響しないが見通しのため）
+        log_files.sort(key=lambda x: x[0])
 
-        for log_file in log_files:
-            if end_reached:
-                break
+        for _, log_file in log_files:
 
             file_path = os.path.join(self.logs_dir, log_file)
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -277,10 +326,9 @@ class LogAnalyzerApp:
                         if post_dt < start_dt:
                             continue
 
-                        # 終了日より後なら、そのファイルを読み終わってから終了
+                        # 終了日より後なら除外（ファイルは新しい順のことがあるため終了しない）
                         if post_dt > end_dt:
-                            end_reached = True
-                            break
+                            continue
 
                         # 土日除外チェック
                         if self.exclude_weekends.get():
@@ -328,46 +376,68 @@ class LogAnalyzerApp:
     def format_post(self, post_dt, text):
         """レスをフォーマット: YY-MM-DD HH:MM\t本文"""
         date_str = post_dt.strftime("%y-%m-%d %H:%M")
-        return f"{date_str}\t{text}"
+        # 改行をスペースに置換（1行=1レスを維持）
+        cleaned_text = text.replace('\n', ' ').replace('\r', ' ')
+        return f"{date_str}\t{cleaned_text}"
 
     def show_results(self, posts):
-        """結果を表示する新しいウィンドウ"""
-        result_window = tk.Toplevel(self.root)
-        result_window.title("抽出結果")
-        result_window.geometry("700x500")
+        """結果を同一ウィンドウ内に表示"""
+        self.last_posts = posts
+        self.result_count_var.set(f"抽出件数: {len(posts)}件")
 
-        # フレーム
-        frame = ttk.Frame(result_window, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
+        self.result_text.config(state=tk.NORMAL)
+        self.result_text.delete(1.0, tk.END)
 
-        # 件数表示
-        info_label = ttk.Label(
-            frame,
-            text=f"抽出件数: {len(posts)}件",
-            font=("Meiryo UI", 10, "bold")
-        )
-        info_label.pack(anchor=tk.W, pady=(0, 10))
-
-        # テキストエリア
-        text_area = scrolledtext.ScrolledText(
-            frame,
-            wrap=tk.NONE,
-            font=("MS Gothic", 9)
-        )
-        text_area.pack(fill=tk.BOTH, expand=True)
-
-        # 結果を表示（最初の100件まで）
-        display_limit = min(100, len(posts))
-        for i, post in enumerate(posts[:display_limit]):
-            text_area.insert(tk.END, post + "\n")
+        limit = max(1, int(self.display_limit.get()))
+        display_limit = min(limit, len(posts))
+        for post in posts[:display_limit]:
+            self.result_text.insert(tk.END, post + "\n")
 
         if len(posts) > display_limit:
-            text_area.insert(tk.END, f"\n... 他 {len(posts) - display_limit}件\n")
+            self.result_text.insert(tk.END, f"\n... 他 {len(posts) - display_limit}件\n")
 
-        text_area.config(state=tk.DISABLED)
+        self.result_text.config(state=tk.DISABLED)
 
-        # 閉じるボタン
-        ttk.Button(frame, text="閉じる", command=result_window.destroy).pack(pady=(10, 0))
+    def clear_results(self):
+        """結果表示をクリア"""
+        self.last_posts = []
+        self.result_count_var.set("抽出件数: 0件")
+        self.result_text.config(state=tk.NORMAL)
+        self.result_text.delete(1.0, tk.END)
+        self.result_text.config(state=tk.DISABLED)
+
+    def copy_results(self):
+        """表示中の結果をクリップボードへコピー"""
+        text = self.result_text.get(1.0, tk.END).strip()
+        if not text:
+            messagebox.showinfo("情報", "コピーする内容がありません")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        messagebox.showinfo("情報", "コピーしました")
+
+    def save_results(self):
+        """抽出結果を保存（全件）"""
+        if not self.last_posts:
+            messagebox.showinfo("情報", "保存する内容がありません")
+            return
+        start_str = self.start_date.get().replace("-", "")
+        end_str = self.end_date.get().replace("-", "")
+        default_name = f"usdjpy_{start_str}_{end_str}.tsv"
+        file_path = filedialog.asksaveasfilename(
+            title="保存先を選択",
+            defaultextension=".tsv",
+            initialfile=default_name,
+            filetypes=[("TSV", "*.tsv"), ("テキスト", "*.txt"), ("すべてのファイル", "*.*")]
+        )
+        if not file_path:
+            return
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(self.last_posts))
+            messagebox.showinfo("情報", "保存しました")
+        except OSError as e:
+            messagebox.showerror("エラー", f"保存に失敗しました:\n{e}")
 
 
 def main():
