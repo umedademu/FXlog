@@ -1,0 +1,9 @@
+datetime,symbol,side,entry_type,entry_price,is_entry,is_entry_plan,is_boast,is_fear,is_fear_plan,is_greed,is_stop,is_stop_plan,is_lc,is_lc_plan,is_tp,is_tp_plan
+2025.12.25 00:15,USDJPY,BUY,INSTANT,,1,0,0,0,0,0,0,0,0,0,0,0
+2025.12.25 00:25,USDJPY,SELL,INSTANT,,0,0,0,0,0,0,0,0,0,0,1,0
+2025.12.25 03:52,USDJPY,BUY,INSTANT,,1,0,0,0,0,0,0,0,0,0,0,0
+2025.12.25 10:37,USDJPY,SELL,INSTANT,,1,0,0,0,0,0,0,0,0,0,0,0
+2025.12.25 13:06,USDJPY,SELL,INSTANT,,1,0,0,0,0,0,0,0,0,0,0,0
+2025.12.25 13:22,USDJPY,BUY,INSTANT,,0,0,0,0,0,0,0,0,0,0,1,0
+2025.12.25 17:24,USDJPY,BUY,INSTANT,,1,0,0,0,0,0,0,0,0,0,0,0
+2025.12.25 22:14,USDJPY,BUY,INSTANT,,1,0,0,0,0,0,0,0,0,0,0,0
