@@ -16,9 +16,13 @@ class LogAnalyzerApp:
 
         # ログディレクトリのパス
         self.logs_dir = r"C:\Users\USER\Desktop\FXlog\logs"
+        # レートデータのパス（1分足）
+        self.rates_dir = r"C:\Users\USER\Desktop\FXlog\data\usdjpy\m1"
 
         # 処理中フラグ
         self.is_processing = False
+        # レートの簡易キャッシュ
+        self.rate_cache = {}
 
         self.create_widgets()
 
@@ -335,8 +339,11 @@ class LogAnalyzerApp:
                             if not self.is_weekday_hour(post_dt):
                                 continue
 
-                        # フォーマット変換: YY-MM-DD HH:MM\t本文
-                        formatted = self.format_post(post_dt, text)
+                        # レートを取得（その時点の始値）
+                        open_rate = self.get_open_rate(post_dt)
+
+                        # フォーマット変換: YY-MM-DD HH:MM\t本文\t始値
+                        formatted = self.format_post(post_dt, text, open_rate)
                         posts_with_dt.append((post_dt, formatted))
 
                     except (json.JSONDecodeError, KeyError):
@@ -373,12 +380,62 @@ class LogAnalyzerApp:
         # 他は除外（月0:00〜6:59、日曜、土7:00以降）
         return False
 
-    def format_post(self, post_dt, text):
-        """レスをフォーマット: YY-MM-DD HH:MM\t本文"""
+    def format_post(self, post_dt, text, open_rate):
+        """レスをフォーマット: YY-MM-DD HH:MM\t本文\t始値"""
         date_str = post_dt.strftime("%y-%m-%d %H:%M")
         # 改行をスペースに置換（1行=1レスを維持）
         cleaned_text = text.replace('\n', ' ').replace('\r', ' ')
-        return f"{date_str}\t{cleaned_text}"
+        rate_str = open_rate if open_rate else ""
+        return f"{date_str}\t{cleaned_text}\t{rate_str}"
+
+    def get_open_rate(self, post_dt):
+        """投稿時点の始値を取得"""
+        date_key = post_dt.strftime("%Y-%m-%d")
+        minute_key = post_dt.strftime("%Y-%m-%d %H:%M")
+
+        if date_key not in self.rate_cache:
+            self.rate_cache[date_key] = self.load_rates_for_date(post_dt)
+
+        return self.rate_cache[date_key].get(minute_key, "")
+
+    def load_rates_for_date(self, post_dt):
+        """指定日の1分足データを読み込む"""
+        year_dir = post_dt.strftime("%Y")
+        date_str = post_dt.strftime("%Y-%m-%d")
+        file_path = os.path.join(self.rates_dir, year_dir, f"{date_str}.csv")
+
+        rates = {}
+        if not os.path.exists(file_path):
+            return rates
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                header_skipped = False
+                for line in f:
+                    if not header_skipped:
+                        header_skipped = True
+                        continue
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(",")
+                    if len(parts) < 2:
+                        continue
+                    time_raw = parts[0]
+                    open_rate = parts[1]
+
+                    # "01.01.2026 00:00:00.000 GMT+0900" -> "01.01.2026 00:00:00.000"
+                    time_main = time_raw.split(" GMT")[0]
+                    try:
+                        dt = datetime.strptime(time_main, "%d.%m.%Y %H:%M:%S.%f")
+                    except ValueError:
+                        continue
+                    minute_key = dt.strftime("%Y-%m-%d %H:%M")
+                    rates[minute_key] = open_rate
+        except OSError:
+            return {}
+
+        return rates
 
     def show_results(self, posts):
         """結果を同一ウィンドウ内に表示"""
