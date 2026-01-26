@@ -23,6 +23,9 @@ class LogAnalyzerApp:
         self.is_processing = False
         # レートの簡易キャッシュ
         self.rate_cache = {}
+        # 抽出結果のまとまり管理
+        self.batches = []
+        self.current_batch_index = 0
 
         self.create_widgets()
 
@@ -111,33 +114,40 @@ class LogAnalyzerApp:
         self.run_button.pack(fill=tk.X, pady=10)
 
         # 結果表示エリア（同一ウィンドウ内）
-        result_frame = ttk.LabelFrame(main_frame, text="抽出結果", padding=10)
+        result_frame = ttk.LabelFrame(main_frame, text="送信用プレビュー", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
-        result_top = ttk.Frame(result_frame)
-        result_top.pack(fill=tk.X, pady=(0, 8))
+        result_header = ttk.Frame(result_frame)
+        result_header.pack(fill=tk.X, pady=(0, 6))
 
         self.result_count_var = tk.StringVar(value="抽出件数: 0件")
-        self.result_count_label = ttk.Label(result_top, textvariable=self.result_count_var)
+        self.result_count_label = ttk.Label(result_header, textvariable=self.result_count_var)
         self.result_count_label.pack(side=tk.LEFT)
 
-        display_frame = ttk.Frame(result_top)
-        display_frame.pack(side=tk.RIGHT)
+        self.batch_info_var = tk.StringVar(value="まとまり: 0/0 （1まとまり: 0件）")
+        self.batch_info_label = ttk.Label(result_header, textvariable=self.batch_info_var)
+        self.batch_info_label.pack(side=tk.RIGHT)
 
-        ttk.Label(display_frame, text="表示上限:").pack(side=tk.LEFT)
-        self.display_limit = tk.IntVar(value=200)
-        display_spin = ttk.Spinbox(
-            display_frame,
-            from_=10,
-            to=5000,
-            textvariable=self.display_limit,
-            width=6
-        )
-        display_spin.pack(side=tk.LEFT, padx=5)
+        result_controls = ttk.Frame(result_frame)
+        result_controls.pack(fill=tk.X, pady=(0, 8))
 
-        ttk.Button(display_frame, text="クリア", command=self.clear_results).pack(side=tk.LEFT, padx=5)
-        ttk.Button(display_frame, text="コピー", command=self.copy_results).pack(side=tk.LEFT, padx=5)
-        ttk.Button(display_frame, text="保存", command=self.save_results).pack(side=tk.LEFT)
+        left_controls = ttk.Frame(result_controls)
+        left_controls.pack(side=tk.LEFT)
+
+        right_controls = ttk.Frame(result_controls)
+        right_controls.pack(side=tk.RIGHT)
+
+        self.prev_button = ttk.Button(left_controls, text="前のまとまり", command=self.prev_batch)
+        self.prev_button.pack(side=tk.LEFT)
+
+        self.next_button = ttk.Button(left_controls, text="次のまとまり", command=self.next_batch)
+        self.next_button.pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(left_controls, text="このまとまりをコピー", command=self.copy_current_batch).pack(side=tk.LEFT, padx=5)
+        ttk.Button(left_controls, text="このまとまりを保存", command=self.save_current_batch).pack(side=tk.LEFT)
+
+        ttk.Button(right_controls, text="全件保存", command=self.save_all_results).pack(side=tk.RIGHT)
+        ttk.Button(right_controls, text="クリア", command=self.clear_results).pack(side=tk.RIGHT, padx=5)
 
         self.result_text = scrolledtext.ScrolledText(
             result_frame,
@@ -148,6 +158,7 @@ class LogAnalyzerApp:
         self.result_text.config(state=tk.DISABLED)
 
         self.last_posts = []
+        self.update_batch_buttons()
 
     def show_calendar(self, date_var):
         """カレンダーダイアログを表示"""
@@ -349,8 +360,8 @@ class LogAnalyzerApp:
                     except (json.JSONDecodeError, KeyError):
                         continue
 
-        # 日付順（新しい順）にソート
-        posts_with_dt.sort(key=lambda x: x[0], reverse=True)
+        # 日付順（古い順）にソート
+        posts_with_dt.sort(key=lambda x: x[0])
 
         # フォーマット済みテキストのみを返す
         return [formatted for _, formatted in posts_with_dt]
@@ -441,30 +452,79 @@ class LogAnalyzerApp:
         """結果を同一ウィンドウ内に表示"""
         self.last_posts = posts
         self.result_count_var.set(f"抽出件数: {len(posts)}件")
+        self.batches = self.build_batches(posts)
+        self.current_batch_index = 0
+        self.update_batch_view()
 
+    def build_batches(self, posts):
+        """指定件数ごとにまとまりを作る"""
+        size = max(1, int(self.batch_size.get()))
+        return [posts[i:i + size] for i in range(0, len(posts), size)]
+
+    def update_batch_view(self):
+        """現在のまとまりを表示"""
         self.result_text.config(state=tk.NORMAL)
         self.result_text.delete(1.0, tk.END)
 
-        limit = max(1, int(self.display_limit.get()))
-        display_limit = min(limit, len(posts))
-        for post in posts[:display_limit]:
+        if not self.batches:
+            self.batch_info_var.set("まとまり: 0/0 （1まとまり: 0件）")
+            self.result_text.config(state=tk.DISABLED)
+            self.update_batch_buttons()
+            return
+
+        total = len(self.batches)
+        idx = self.current_batch_index
+        size = max(1, int(self.batch_size.get()))
+        batch = self.batches[idx]
+
+        self.batch_info_var.set(f"まとまり: {idx + 1}/{total} （1まとまり: {size}件）")
+
+        for post in batch:
             self.result_text.insert(tk.END, post + "\n")
 
-        if len(posts) > display_limit:
-            self.result_text.insert(tk.END, f"\n... 他 {len(posts) - display_limit}件\n")
-
         self.result_text.config(state=tk.DISABLED)
+        self.update_batch_buttons()
+
+    def update_batch_buttons(self):
+        """まとまり移動ボタンの状態を更新"""
+        if not self.batches:
+            self.prev_button.config(state=tk.DISABLED)
+            self.next_button.config(state=tk.DISABLED)
+            return
+
+        self.prev_button.config(
+            state=tk.NORMAL if self.current_batch_index > 0 else tk.DISABLED
+        )
+        self.next_button.config(
+            state=tk.NORMAL if self.current_batch_index < len(self.batches) - 1 else tk.DISABLED
+        )
+
+    def prev_batch(self):
+        """前のまとまりへ"""
+        if self.current_batch_index > 0:
+            self.current_batch_index -= 1
+            self.update_batch_view()
+
+    def next_batch(self):
+        """次のまとまりへ"""
+        if self.current_batch_index < len(self.batches) - 1:
+            self.current_batch_index += 1
+            self.update_batch_view()
 
     def clear_results(self):
         """結果表示をクリア"""
         self.last_posts = []
+        self.batches = []
+        self.current_batch_index = 0
         self.result_count_var.set("抽出件数: 0件")
+        self.batch_info_var.set("まとまり: 0/0 （1まとまり: 0件）")
         self.result_text.config(state=tk.NORMAL)
         self.result_text.delete(1.0, tk.END)
         self.result_text.config(state=tk.DISABLED)
+        self.update_batch_buttons()
 
-    def copy_results(self):
-        """表示中の結果をクリップボードへコピー"""
+    def copy_current_batch(self):
+        """表示中のまとまりをコピー"""
         text = self.result_text.get(1.0, tk.END).strip()
         if not text:
             messagebox.showinfo("情報", "コピーする内容がありません")
@@ -473,7 +533,35 @@ class LogAnalyzerApp:
         self.root.clipboard_append(text)
         messagebox.showinfo("情報", "コピーしました")
 
-    def save_results(self):
+    def save_current_batch(self):
+        """表示中のまとまりを保存"""
+        if not self.batches:
+            messagebox.showinfo("情報", "保存する内容がありません")
+            return
+
+        start_str = self.start_date.get().replace("-", "")
+        end_str = self.end_date.get().replace("-", "")
+        total = len(self.batches)
+        index = self.current_batch_index + 1
+        digits = len(str(total))
+        part_str = str(index).zfill(digits)
+        default_name = f"usdjpy_{start_str}_{end_str}_part{part_str}.tsv"
+        file_path = filedialog.asksaveasfilename(
+            title="保存先を選択",
+            defaultextension=".tsv",
+            initialfile=default_name,
+            filetypes=[("TSV", "*.tsv"), ("テキスト", "*.txt"), ("すべてのファイル", "*.*")]
+        )
+        if not file_path:
+            return
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(self.batches[self.current_batch_index]))
+            messagebox.showinfo("情報", "保存しました")
+        except OSError as e:
+            messagebox.showerror("エラー", f"保存に失敗しました:\n{e}")
+
+    def save_all_results(self):
         """抽出結果を保存（全件）"""
         if not self.last_posts:
             messagebox.showinfo("情報", "保存する内容がありません")
