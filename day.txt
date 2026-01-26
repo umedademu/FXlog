@@ -1,0 +1,7 @@
+USDJPY_Candlestick_1_M_BID_01.01.2026-24.01.2026.csv
+上記ファイルは、2026年のUSDJPYの1分足のデータです
+これらを1日1ファイルに分割して下記のフォルダに出力してください
+C:\Users\USER\Desktop\FXlog\data\usdjpy\m1\2026
+
+なお、ファイル名の付け方や内容の生成ルールについては下記フォルダ内のCSV群を参考にしてください
+C:\Users\USER\Desktop\FXlog\data\usdjpy\m1\2025
