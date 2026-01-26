@@ -1,0 +1,15 @@
+{
+  "start_part": "3298",
+  "end_part": "3230",
+  "missing_year": "2026",
+  "sleep_min": "0.3",
+  "sleep_max": "0.6",
+  "extra_enabled": false,
+  "extra_pages": "50",
+  "extra_sleep_min": "5",
+  "extra_sleep_max": "15",
+  "extra2_enabled": false,
+  "extra2_pages": "200",
+  "extra2_sleep_min": "15",
+  "extra2_sleep_max": "30"
+}

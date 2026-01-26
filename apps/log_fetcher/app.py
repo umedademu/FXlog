@@ -283,11 +283,15 @@ def collect_comments(
     return all_comments
 
 
-def save_jsonl(path, comments):
+def save_jsonl(path, comments, missing_year=None):
     comments = sorted(comments, key=lambda x: x.get("comment_no", 0), reverse=True)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for item in comments:
+            # posted_at に年が含まれていない場合、missing_year を付与
+            posted_at = item.get("posted_at", "")
+            if missing_year and posted_at and "年" not in posted_at:
+                item["posted_at"] = f"{missing_year}年{posted_at}"
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
@@ -732,7 +736,7 @@ class App:
                     else:
                         self.current_label = f"{file_day.year}年{file_day.month}月{file_day.day}日 part={part}"
                         path = build_log_path(part, file_day)
-                        save_jsonl(path, comments)
+                        save_jsonl(path, comments, missing_year)
                         self.log(f"保存: {path} 件数={len(comments)}")
                 except Exception as exc:
                     self.log(f"失敗: part={part} {exc}")

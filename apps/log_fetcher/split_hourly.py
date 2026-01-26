@@ -143,7 +143,12 @@ def main() -> int:
                 if handle is None:
                     handle = out_path.open("a", encoding="utf-8", newline="\n")
                     writers[out_path] = handle
-                handle.write(line + "\n")
+                # posted_at に年が含まれていない場合、missing_year を付与
+                if args.missing_year and isinstance(obj, dict):
+                    posted_at = obj.get("posted_at", "")
+                    if posted_at and "年" not in str(posted_at):
+                        obj["posted_at"] = f"{args.missing_year}年{posted_at}"
+                handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
                 written += 1
 
     for handle in writers.values():
