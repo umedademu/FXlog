@@ -20,6 +20,8 @@ class LogAnalyzerApp:
         self.logs_dir = r"C:\Users\USER\Desktop\FXlog\logs"
         # レートデータのパス（1分足）
         self.rates_dir = r"C:\Users\USER\Desktop\FXlog\data\usdjpy\m1"
+        # CSV出力先
+        self.csv_dir = r"C:\Users\USER\Desktop\FXlog\csv"
         # プロンプトのパス
         self.prompt_path = os.path.join(os.path.dirname(__file__), "docs", "prompt.md")
         # アプリのパス
@@ -34,9 +36,19 @@ class LogAnalyzerApp:
         self.current_batch_index = 0
         # 送信中フラグ
         self.is_sending = False
+        # 自動送信フラグ
+        self.auto_run_active = False
+        self.auto_stop_requested = False
+        self.send_context = "single"
         # バッチ情報
         self.batch_job_name = ""
         self.batch_responses_file = ""
+        # CSV自動保存
+        self.auto_save_csv = tk.BooleanVar(value=True)
+        # CSV既存ファイルの扱い
+        self.csv_mode = tk.StringVar(value="init")
+        # CSV追記中の日付
+        self.csv_touched_dates = set()
 
         self.create_widgets()
 
@@ -48,7 +60,7 @@ class LogAnalyzerApp:
         # 条件エリア
         condition_frame = ttk.LabelFrame(main_frame, text="条件", padding=10)
         condition_frame.pack(fill=tk.X, pady=10)
-        condition_frame.columnconfigure(5, weight=1)
+        condition_frame.columnconfigure(6, weight=1)
 
         # 開始日
         ttk.Label(condition_frame, text="開始日:").grid(row=0, column=0, sticky=tk.W)
@@ -126,6 +138,26 @@ class LogAnalyzerApp:
             command=self.on_send_mode_changed
         ).grid(row=2, column=2, sticky=tk.W)
 
+        ttk.Label(condition_frame, text="CSV既存:").grid(row=2, column=3, sticky=tk.W)
+        ttk.Radiobutton(
+            condition_frame,
+            text="初期化",
+            variable=self.csv_mode,
+            value="init"
+        ).grid(row=2, column=4, sticky=tk.W)
+        ttk.Radiobutton(
+            condition_frame,
+            text="追記",
+            variable=self.csv_mode,
+            value="append"
+        ).grid(row=2, column=5, sticky=tk.W)
+
+        ttk.Checkbutton(
+            condition_frame,
+            text="CSV自動保存",
+            variable=self.auto_save_csv
+        ).grid(row=2, column=6, sticky=tk.W)
+
         # 設定確認（1行）
         self.info_var = tk.StringVar(value="")
         info_label = ttk.Label(main_frame, textvariable=self.info_var)
@@ -136,7 +168,7 @@ class LogAnalyzerApp:
         self.status_label.pack(pady=(0, 5))
 
         # 変更時に自動更新
-        for var in (self.start_date, self.end_date, self.exclude_weekends, self.batch_size, self.model_name, self.send_mode):
+        for var in (self.start_date, self.end_date, self.exclude_weekends, self.batch_size, self.model_name, self.send_mode, self.auto_save_csv, self.csv_mode):
             var.trace_add("write", lambda *_: self.update_info())
         self.update_info()
 
@@ -175,11 +207,17 @@ class LogAnalyzerApp:
         self.next_button = ttk.Button(left_controls, text="次のまとまり", command=self.next_batch)
         self.next_button.pack(side=tk.LEFT, padx=5)
 
-        self.send_button = ttk.Button(left_controls, text="このまとまりを送信", command=self.send_current_batch)
+        self.send_button = ttk.Button(left_controls, text="このまとまりを送信（テスト）", command=self.send_current_batch)
         self.send_button.pack(side=tk.LEFT, padx=5)
 
         self.batch_send_button = ttk.Button(left_controls, text="全部をまとめて送信", command=self.send_all_batches)
         self.batch_send_button.pack(side=tk.LEFT, padx=5)
+
+        self.auto_send_button = ttk.Button(left_controls, text="通常を一括送信", command=self.start_auto_send_normal)
+        self.auto_send_button.pack(side=tk.LEFT, padx=5)
+
+        self.auto_stop_button = ttk.Button(left_controls, text="停止", command=self.stop_auto_send)
+        self.auto_stop_button.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(right_controls, text="このまとまりをコピー", command=self.copy_current_batch).pack(side=tk.RIGHT, padx=5)
         ttk.Button(right_controls, text="このまとまりを保存", command=self.save_current_batch).pack(side=tk.RIGHT)
@@ -214,6 +252,7 @@ class LogAnalyzerApp:
         self.batch_status_button.pack(side=tk.LEFT)
         self.batch_result_button = ttk.Button(batch_controls, text="結果取得", command=self.fetch_batch_results)
         self.batch_result_button.pack(side=tk.LEFT, padx=5)
+        ttk.Button(batch_controls, text="CSV保存", command=self.save_ai_result_to_csv).pack(side=tk.LEFT, padx=5)
 
         ai_controls = ttk.Frame(ai_header_bottom)
         ai_controls.pack(side=tk.RIGHT)
@@ -300,7 +339,9 @@ class LogAnalyzerApp:
             f"土日除外: {'ON' if self.exclude_weekends.get() else 'OFF'}  "
             f"1まとまり: {self.batch_size.get()}件  "
             f"モデル: {self.model_name.get()}  "
-            f"送信方式: {'通常' if self.send_mode.get() == 'normal' else 'まとめ'}"
+            f"送信方式: {'通常' if self.send_mode.get() == 'normal' else 'まとめ'}  "
+            f"CSV既存: {'初期化' if self.csv_mode.get() == 'init' else '追記'}  "
+            f"CSV自動保存: {'ON' if self.auto_save_csv.get() else 'OFF'}"
         )
         self.info_var.set(info)
 
@@ -544,6 +585,8 @@ class LogAnalyzerApp:
         self.batch_job_name = ""
         self.batch_responses_file = ""
         self.batch_job_var.set("バッチID: なし")
+        self.csv_touched_dates = set()
+        self.csv_touched_dates = set()
         if not self.is_sending:
             if self.send_mode.get() == "batch":
                 self.ai_status_var.set("バッチ状態: 待機")
@@ -586,32 +629,41 @@ class LogAnalyzerApp:
         """まとまり移動ボタンの状態を更新"""
         has_batches = bool(self.batches)
         mode = self.send_mode.get() if hasattr(self, "send_mode") else "normal"
+        busy = self.is_sending or self.auto_run_active
 
         if not has_batches:
             self.prev_button.config(state=tk.DISABLED)
             self.next_button.config(state=tk.DISABLED)
             self.send_button.config(state=tk.DISABLED)
             self.batch_send_button.config(state=tk.DISABLED)
+            self.auto_send_button.config(state=tk.DISABLED)
         else:
             self.prev_button.config(
-                state=tk.NORMAL if self.current_batch_index > 0 else tk.DISABLED
+                state=tk.NORMAL if (self.current_batch_index > 0 and not busy) else tk.DISABLED
             )
             self.next_button.config(
-                state=tk.NORMAL if self.current_batch_index < len(self.batches) - 1 else tk.DISABLED
+                state=tk.NORMAL if (self.current_batch_index < len(self.batches) - 1 and not busy) else tk.DISABLED
             )
             self.send_button.config(
-                state=tk.NORMAL if (mode == "normal" and not self.is_sending) else tk.DISABLED
+                state=tk.NORMAL if (mode == "normal" and not busy) else tk.DISABLED
             )
             self.batch_send_button.config(
-                state=tk.NORMAL if (mode == "batch" and not self.is_sending) else tk.DISABLED
+                state=tk.NORMAL if (mode == "batch" and not busy) else tk.DISABLED
             )
+            self.auto_send_button.config(
+                state=tk.NORMAL if (mode == "normal" and not busy) else tk.DISABLED
+            )
+
+        self.auto_stop_button.config(
+            state=tk.NORMAL if self.auto_run_active else tk.DISABLED
+        )
 
         has_job = bool(self.batch_job_name)
         self.batch_status_button.config(
-            state=tk.NORMAL if (has_job and not self.is_sending) else tk.DISABLED
+            state=tk.NORMAL if (has_job and not busy) else tk.DISABLED
         )
         self.batch_result_button.config(
-            state=tk.NORMAL if (has_job and not self.is_sending) else tk.DISABLED
+            state=tk.NORMAL if (has_job and not busy) else tk.DISABLED
         )
 
     def prev_batch(self):
@@ -739,6 +791,7 @@ class LogAnalyzerApp:
         full_text = f"{prompt_text}\n\n【投稿内容】\n{batch_text}"
 
         self.is_sending = True
+        self.send_context = "single"
         self.ai_status_var.set("送信状態: 送信中")
         self.update_batch_buttons()
 
@@ -776,6 +829,7 @@ class LogAnalyzerApp:
             return
 
         self.is_sending = True
+        self.send_context = "batch"
         self.ai_status_var.set("バッチ状態: 送信中")
         self.update_batch_buttons()
 
@@ -784,6 +838,118 @@ class LogAnalyzerApp:
             args=(prompt_text, model, api_key)
         )
         thread.start()
+
+    def start_auto_send_normal(self):
+        """通常モードで全てのまとまりを順番に送信"""
+        if self.send_mode.get() != "normal":
+            messagebox.showinfo("情報", "送信方式が「まとめ」になっています")
+            return
+        if self.is_sending or self.auto_run_active:
+            messagebox.showwarning("注意", "送信中です。しばらくお待ちください。")
+            return
+        if not self.batches:
+            messagebox.showinfo("情報", "送信する内容がありません")
+            return
+
+        model = self.model_name.get().strip()
+        if not model:
+            messagebox.showerror("エラー", "モデル名が未入力です")
+            return
+
+        prompt_text = self.load_prompt_text()
+        if not prompt_text:
+            messagebox.showerror("エラー", "プロンプトが読み込めませんでした")
+            return
+
+        api_key = self.load_api_key()
+        if not api_key:
+            messagebox.showerror("エラー", "APIキーが見つかりません")
+            return
+
+        self.is_sending = True
+        self.auto_run_active = True
+        self.auto_stop_requested = False
+        self.send_context = "auto"
+        self.csv_touched_dates = set()
+        self.ai_status_var.set("送信状態: 自動送信中")
+        self.status_label.config(text=f"自動送信: 0/{len(self.batches)}")
+        self.update_batch_buttons()
+
+        thread = threading.Thread(
+            target=self._auto_send_thread,
+            args=(prompt_text, model, api_key)
+        )
+        thread.start()
+
+    def stop_auto_send(self):
+        """自動送信の停止要求"""
+        if not self.auto_run_active:
+            return
+        self.auto_stop_requested = True
+        self.status_label.config(text="自動送信: 停止要求を受け付けました")
+
+    def _auto_send_thread(self, prompt_text, model, api_key):
+        """自動送信（バックグラウンド）"""
+        total = len(self.batches)
+        saved_rows_total = 0
+        error_count_total = 0
+
+        for idx, batch in enumerate(self.batches, start=1):
+            if self.auto_stop_requested:
+                break
+
+            batch_text = "\n".join(batch)
+            full_text = f"{prompt_text}\n\n【投稿内容】\n{batch_text}"
+
+            try:
+                result_text = self.call_gemini_api(full_text, model, api_key)
+            except Exception as e:
+                self.root.after(0, lambda: self._show_ai_error(str(e)))
+                return
+
+            rows, error_count = self.parse_ai_output(result_text)
+            error_count_total += error_count
+            saved_rows = 0
+            if self.auto_save_csv.get():
+                try:
+                    _, saved_rows = self.append_rows_to_csv(rows, self.csv_mode.get(), self.csv_touched_dates)
+                    saved_rows_total += saved_rows
+                except Exception as e:
+                    self.root.after(0, lambda: self._show_ai_error(str(e)))
+                    return
+
+            self.root.after(
+                0,
+                lambda res=result_text, i=idx, t=total, saved=saved_rows_total, err=error_count_total:
+                self._show_auto_progress(res, i, t, saved, err)
+            )
+
+        self.root.after(0, self._finish_auto_send)
+
+    def _show_auto_progress(self, text, index, total, saved_rows, error_rows):
+        """自動送信の進行を表示"""
+        self.ai_result_text.config(state=tk.NORMAL)
+        self.ai_result_text.delete(1.0, tk.END)
+        self.ai_result_text.insert(tk.END, text)
+        self.ai_result_text.config(state=tk.DISABLED)
+
+        message = f"自動送信: {index}/{total} 完了  保存: {saved_rows}行"
+        if error_rows:
+            message += f"  読み取り不可: {error_rows}行"
+        self.status_label.config(text=message)
+
+    def _finish_auto_send(self):
+        """自動送信の終了処理"""
+        stopped = self.auto_stop_requested
+        self.auto_run_active = False
+        self.auto_stop_requested = False
+        self.is_sending = False
+
+        if stopped:
+            self.ai_status_var.set("送信状態: 停止")
+        else:
+            self.ai_status_var.set("送信状態: 完了")
+        self.update_batch_buttons()
 
     def _send_batch_thread(self, prompt_text, model, api_key):
         """バッチ送信処理（バックグラウンド）"""
@@ -915,6 +1081,9 @@ class LogAnalyzerApp:
         self.ai_result_text.delete(1.0, tk.END)
         self.ai_result_text.insert(tk.END, text)
         self.ai_result_text.config(state=tk.DISABLED)
+
+        if self.auto_save_csv.get() and self.send_context != "single":
+            self.save_ai_result_to_csv(show_message=False)
         self.update_batch_buttons()
 
     def create_batch_jsonl(self, prompt_text):
@@ -1186,6 +1355,8 @@ class LogAnalyzerApp:
     def _show_ai_error(self, error_msg):
         """送信エラーを表示"""
         self.is_sending = False
+        self.auto_run_active = False
+        self.auto_stop_requested = False
         label = "バッチ状態" if self.send_mode.get() == "batch" else "送信状態"
         self.ai_status_var.set(f"{label}: エラー")
         self.update_batch_buttons()
@@ -1209,6 +1380,152 @@ class LogAnalyzerApp:
         if not self.is_sending:
             label = "バッチ状態" if self.send_mode.get() == "batch" else "送信状態"
             self.ai_status_var.set(f"{label}: 待機")
+
+    def save_ai_result_to_csv(self, show_message=True):
+        """送信結果をCSVとして保存"""
+        text = self.ai_result_text.get(1.0, tk.END).strip()
+        if not text:
+            if show_message:
+                messagebox.showinfo("情報", "保存する内容がありません")
+            return
+
+        rows, error_count = self.parse_ai_output(text)
+        if not rows:
+            if show_message:
+                messagebox.showinfo("情報", "保存できる行が見つかりませんでした")
+            return
+
+        try:
+            saved_files, saved_rows = self.append_rows_to_csv(
+                rows,
+                self.csv_mode.get(),
+                set()
+            )
+        except Exception as e:
+            messagebox.showerror("エラー", str(e))
+            return
+
+        message = f"CSV保存: {saved_files}ファイル / {saved_rows}行"
+        if error_count:
+            message += f"（読み取り不可: {error_count}行）"
+        self.status_label.config(text=message)
+        if show_message:
+            messagebox.showinfo("情報", message)
+
+    def parse_ai_output(self, text):
+        """AI出力をCSV行に変換"""
+        rows = []
+        error_count = 0
+
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.upper() == "NONE":
+                continue
+            if line.startswith("[") and "]" in line:
+                line = line.split("]", 1)[1].strip()
+
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                error_count += 1
+                continue
+
+            dt_raw = parts[0]
+            side = parts[1]
+            entry_type = parts[2]
+            entry_price = parts[3]
+            reason = ",".join(parts[4:]).strip()
+
+            dt_info = self.parse_ai_datetime(dt_raw)
+            if not dt_info:
+                error_count += 1
+                continue
+
+            rows.append({
+                "date_key": dt_info["date_key"],
+                "datetime": dt_info["datetime"],
+                "side": side,
+                "entry_type": entry_type,
+                "entry_price": entry_price,
+                "reason": reason
+            })
+
+        return rows, error_count
+
+    def append_rows_to_csv(self, rows, mode, touched_dates):
+        """CSVに追記または初期化して保存"""
+        try:
+            os.makedirs(self.csv_dir, exist_ok=True)
+        except OSError as e:
+            raise Exception(f"保存先の作成に失敗しました:\n{e}") from e
+
+        grouped = {}
+        for item in rows:
+            date_key = item["date_key"]
+            grouped.setdefault(date_key, []).append(item)
+
+        saved_files = 0
+        saved_rows = 0
+
+        for date_key, items in grouped.items():
+            file_name = f"usdjpy_{date_key}.csv"
+            file_path = os.path.join(self.csv_dir, file_name)
+            file_exists = os.path.exists(file_path)
+
+            write_header = False
+            open_mode = "a"
+
+            if mode == "init":
+                if date_key not in touched_dates:
+                    open_mode = "w"
+                    write_header = True
+                else:
+                    open_mode = "a"
+            else:
+                if (not file_exists) and (date_key not in touched_dates):
+                    write_header = True
+
+            try:
+                with open(file_path, open_mode, encoding="utf-8") as f:
+                    if write_header:
+                        f.write("datetime,side,entry_type,entry_price,reason\n")
+                    for row in items:
+                        line = ",".join([
+                            row["datetime"],
+                            row["side"],
+                            row["entry_type"],
+                            row["entry_price"],
+                            row["reason"]
+                        ])
+                        f.write(line + "\n")
+                saved_files += 1
+                saved_rows += len(items)
+                touched_dates.add(date_key)
+            except OSError as e:
+                raise Exception(f"CSV保存に失敗しました:\n{e}") from e
+
+        return saved_files, saved_rows
+
+    def parse_ai_datetime(self, dt_raw):
+        """AI出力の日時を解析"""
+        match = re.match(r"^(\d{2})[.\-\/](\d{2})[.\-\/](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$", dt_raw)
+        if not match:
+            return None
+        yy, mm, dd, hh, mi, _ = match.groups()
+        try:
+            year = 2000 + int(yy)
+            month = int(mm)
+            day = int(dd)
+            hour = int(hh)
+            minute = int(mi)
+            datetime(int(year), month, day, hour, minute)
+        except ValueError:
+            return None
+
+        date_key = f"{year:04d}{month:02d}{day:02d}"
+        datetime_str = f"{int(yy):02d}.{month:02d}.{day:02d} {hour:02d}:{minute:02d}"
+        return {"date_key": date_key, "datetime": datetime_str}
 
     def load_prompt_text(self):
         """プロンプトを読み込む"""
