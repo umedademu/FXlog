@@ -67,7 +67,7 @@ class LogAnalyzerApp:
         # 条件エリア
         condition_frame = ttk.LabelFrame(main_frame, text="条件", padding=10)
         condition_frame.pack(fill=tk.X, pady=10)
-        condition_frame.columnconfigure(7, weight=1)
+        condition_frame.columnconfigure(6, weight=1)
 
         # 開始日
         ttk.Label(condition_frame, text="開始日:").grid(row=0, column=0, sticky=tk.W)
@@ -94,19 +94,22 @@ class LogAnalyzerApp:
         ).grid(row=0, column=5, padx=(0, 10), sticky=tk.W)
 
         # 実行ボタン
+        action_frame = ttk.Frame(condition_frame)
+        action_frame.grid(row=0, column=7, rowspan=3, padx=(10, 0), sticky=tk.NS + tk.E)
+
         self.run_button = ttk.Button(
-            condition_frame,
+            action_frame,
             text="抽出のみ実行",
             command=self.run_analysis
         )
-        self.run_button.grid(row=0, column=6, rowspan=3, padx=(10, 0), sticky=tk.NS)
+        self.run_button.pack(fill=tk.X, pady=(0, 5))
 
         self.run_and_send_button = ttk.Button(
-            condition_frame,
+            action_frame,
             text="抽出&一括送信実行",
             command=self.run_analysis_and_send
         )
-        self.run_and_send_button.grid(row=0, column=7, rowspan=3, padx=(5, 0), sticky=tk.NS)
+        self.run_and_send_button.pack(fill=tk.X)
 
         # 土日除外
         self.exclude_weekends = tk.BooleanVar(value=True)
