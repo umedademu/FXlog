@@ -1226,22 +1226,26 @@ class LogAnalyzerApp:
             if os.environ.get(key_name):
                 return os.environ.get(key_name)
 
-        env_path = os.path.join(self.app_dir, ".env")
-        if not os.path.exists(env_path):
-            return ""
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    if k in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
-                        return v
-        except OSError:
-            return ""
+        env_paths = [
+            os.path.join(self.app_dir, ".env.local"),
+            os.path.join(self.app_dir, ".env")
+        ]
+        for env_path in env_paths:
+            if not os.path.exists(env_path):
+                continue
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+                            return v
+            except OSError:
+                continue
         return ""
 
     def call_gemini_api(self, full_text, model, api_key):

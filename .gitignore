@@ -8,3 +8,9 @@ data/
 # 生成したCSV（実行環境ごとに内容が変わるため管理しない）
 csv/
 csv_legacy/
+
+# 環境変数ファイル（機密）
+.env
+.env.local
+apps/log_analyzer/.env
+apps/log_analyzer/.env.local
