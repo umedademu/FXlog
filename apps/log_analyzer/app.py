@@ -58,7 +58,7 @@ class LogAnalyzerApp:
         # CSV追記中の日付
         self.csv_touched_dates = set()
         # 待ち時間（秒）
-        self.request_timeout = tk.IntVar(value=1200)
+        self.request_timeout = tk.IntVar(value=300)
         # 自動再試行の回数
         self.retry_count = tk.IntVar(value=3)
         # 一括送信の開始まとまり
@@ -456,6 +456,35 @@ class LogAnalyzerApp:
         self.auto_start_index.set(self.current_batch_index + 1)
         self.normalize_auto_start_index()
         self.update_info()
+
+    def _collect_date_keys_from_batches(self, start_idx):
+        """開始まとまり以降の日付キーを集める"""
+        date_keys = set()
+        total = len(self.batches)
+        if total <= 0:
+            return date_keys
+        start_idx = max(1, min(int(start_idx), total))
+        for idx in range(start_idx - 1, total):
+            for post in self.batches[idx]:
+                parts = post.split("\t", 1)
+                if not parts:
+                    continue
+                dt_text = parts[0].strip()
+                try:
+                    dt = datetime.strptime(dt_text, "%y-%m-%d %H:%M")
+                except ValueError:
+                    continue
+                date_keys.add(dt.strftime("%Y%m%d"))
+        return date_keys
+
+    def _has_existing_csv_for_batches(self, start_idx):
+        """開始まとまり以降で既存CSVがあるか確認"""
+        date_keys = self._collect_date_keys_from_batches(start_idx)
+        for date_key in date_keys:
+            file_path = os.path.join(self.csv_dir, f"usdjpy_{date_key}.csv")
+            if os.path.exists(file_path):
+                return True
+        return False
 
     def on_send_mode_changed(self):
         """送信方式の変更時処理"""
@@ -1086,10 +1115,19 @@ class LogAnalyzerApp:
             start_idx = total
             self.auto_start_index.set(start_idx)
         if start_idx > 1 and self.auto_save_csv.get() and self.csv_mode.get() == "init":
-            messagebox.showwarning(
-                "注意",
-                "開始まとまりが2以上でCSV既存が初期化だと、途中までのCSVが消える可能性があります。追記を推奨します。"
-            )
+            if self._has_existing_csv_for_batches(start_idx):
+                choice = messagebox.askyesnocancel(
+                    "確認",
+                    "開始まとまりが2以上で既存CSVがあります。\n"
+                    "初期化のまま進むと既存CSVが消える可能性があります。\n"
+                    "追記に切り替えますか？\n\n"
+                    "はい: 追記に切り替える / いいえ: 初期化のまま続行 / キャンセル: 中止"
+                )
+                if choice is None:
+                    return
+                if choice:
+                    self.csv_mode.set("append")
+                    self.update_info()
 
         self.is_sending = True
         self.auto_run_active = True
