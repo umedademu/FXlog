@@ -40,6 +40,8 @@ class LogAnalyzerApp:
         self.auto_run_active = False
         self.auto_stop_requested = False
         self.send_context = "single"
+        # 抽出後に自動送信するか
+        self.auto_send_after_extract = False
         # 経過時間表示
         self.request_timer_active = False
         self.request_timer_start = None
@@ -65,7 +67,7 @@ class LogAnalyzerApp:
         # 条件エリア
         condition_frame = ttk.LabelFrame(main_frame, text="条件", padding=10)
         condition_frame.pack(fill=tk.X, pady=10)
-        condition_frame.columnconfigure(6, weight=1)
+        condition_frame.columnconfigure(7, weight=1)
 
         # 開始日
         ttk.Label(condition_frame, text="開始日:").grid(row=0, column=0, sticky=tk.W)
@@ -94,10 +96,17 @@ class LogAnalyzerApp:
         # 実行ボタン
         self.run_button = ttk.Button(
             condition_frame,
-            text="抽出実行",
+            text="抽出のみ実行",
             command=self.run_analysis
         )
         self.run_button.grid(row=0, column=6, rowspan=3, padx=(10, 0), sticky=tk.NS)
+
+        self.run_and_send_button = ttk.Button(
+            condition_frame,
+            text="抽出&一括送信実行",
+            command=self.run_analysis_and_send
+        )
+        self.run_and_send_button.grid(row=0, column=7, rowspan=3, padx=(5, 0), sticky=tk.NS)
 
         # 土日除外
         self.exclude_weekends = tk.BooleanVar(value=True)
@@ -415,7 +424,14 @@ class LogAnalyzerApp:
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
-    def run_analysis(self):
+    def update_run_buttons(self):
+        """抽出ボタンの状態を更新"""
+        enabled = not (self.is_processing or self.auto_run_active or self.is_sending)
+        state = tk.NORMAL if enabled else tk.DISABLED
+        self.run_button.config(state=state)
+        self.run_and_send_button.config(state=state)
+
+    def run_analysis(self, auto_send=False):
         """解析実行"""
         if self.is_processing:
             messagebox.showwarning("注意", "処理中です。しばらくお待ちください。")
@@ -425,13 +441,24 @@ class LogAnalyzerApp:
             messagebox.showerror("エラー", "開始日は終了日より前にしてください")
             return
 
+        if auto_send:
+            self.send_mode.set("normal")
+            self.on_send_mode_changed()
+            self.auto_send_after_extract = True
+        else:
+            self.auto_send_after_extract = False
+
         # スレッドで処理開始
         self.is_processing = True
         self.status_label.config(text="ログを読み込んでいます...")
-        self.run_button.config(state=tk.DISABLED)
+        self.update_run_buttons()
 
         thread = threading.Thread(target=self._run_analysis_thread)
         thread.start()
+
+    def run_analysis_and_send(self):
+        """抽出してから一括送信"""
+        self.run_analysis(auto_send=True)
 
     def _run_analysis_thread(self):
         """バックグラウンドで解析実行"""
@@ -448,21 +475,26 @@ class LogAnalyzerApp:
         """結果を表示（メインスレッドから呼ばれる）"""
         self.is_processing = False
         self.status_label.config(text="")
-        self.run_button.config(state=tk.NORMAL)
+        self.update_run_buttons()
 
         if not posts:
             self.clear_results()
             messagebox.showinfo("結果", "指定された期間内のログが見つかりませんでした")
+            self.auto_send_after_extract = False
             return
 
         # 結果を表示
         self.show_results(posts)
+        if self.auto_send_after_extract:
+            self.auto_send_after_extract = False
+            self.root.after(0, self.start_auto_send_normal)
 
     def _show_error(self, error_msg):
         """エラーを表示（メインスレッドから呼ばれる）"""
         self.is_processing = False
         self.status_label.config(text="", foreground="red")
-        self.run_button.config(state=tk.NORMAL)
+        self.auto_send_after_extract = False
+        self.update_run_buttons()
         messagebox.showerror("エラー", f"処理中にエラーが発生しました:\n{error_msg}")
 
     def load_and_filter_posts(self):
@@ -939,6 +971,7 @@ class LogAnalyzerApp:
         self.auto_run_start = datetime.now()
         self.auto_total_time_var.set("一括所要時間: 計測中")
         self.update_batch_buttons()
+        self.update_run_buttons()
 
         thread = threading.Thread(
             target=self._auto_send_thread,
@@ -1035,6 +1068,7 @@ class LogAnalyzerApp:
         else:
             self.ai_status_var.set("送信状態: 完了")
         self.update_batch_buttons()
+        self.update_run_buttons()
 
     def _send_batch_thread(self, prompt_text, model, api_key):
         """バッチ送信処理（バックグラウンド）"""
@@ -1448,6 +1482,7 @@ class LogAnalyzerApp:
         label = "バッチ状態" if self.send_mode.get() == "batch" else "送信状態"
         self.ai_status_var.set(f"{label}: エラー")
         self.update_batch_buttons()
+        self.update_run_buttons()
         messagebox.showerror("エラー", f"送信に失敗しました:\n{error_msg}")
 
     def copy_ai_result(self):
