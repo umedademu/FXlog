@@ -1026,7 +1026,7 @@ class LogAnalyzerApp:
             if self.auto_stop_requested:
                 break
 
-            self.root.after(0, lambda i=idx, t=total: self._show_auto_batch(i, t))
+            self.root.after(0, lambda i=idx, t=total: self._show_auto_sending(i, t))
             self.root.after(0, self.start_request_timer)
             batch_text = "\n".join(batch)
             full_text = f"{prompt_text}\n\n【投稿内容】\n{batch_text}"
@@ -1064,15 +1064,16 @@ class LogAnalyzerApp:
         self.ai_result_text.insert(tk.END, text)
         self.ai_result_text.config(state=tk.DISABLED)
 
+        self.current_batch_index = index - 1
+        self.update_batch_view()
+
         message = f"自動送信: {index}/{total} 完了  保存: {saved_rows}行"
         if error_rows:
             message += f"  読み取り不可: {error_rows}行"
         self.status_label.config(text=message)
 
-    def _show_auto_batch(self, index, total):
-        """自動送信中のまとまり表示"""
-        self.current_batch_index = index - 1
-        self.update_batch_view()
+    def _show_auto_sending(self, index, total):
+        """自動送信中の送信状態表示"""
         self.status_label.config(text=f"自動送信: {index}/{total} 送信中")
 
     def _finish_auto_send(self):
