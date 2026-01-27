@@ -57,6 +57,14 @@ class LogAnalyzerApp:
         self.csv_mode = tk.StringVar(value="init")
         # CSV追記中の日付
         self.csv_touched_dates = set()
+        # 待ち時間（秒）
+        self.request_timeout = tk.IntVar(value=1200)
+        # 自動再試行の回数
+        self.retry_count = tk.IntVar(value=3)
+        # 一括送信の開始まとまり
+        self.auto_start_index = tk.IntVar(value=1)
+        # 再開用に直近の失敗まとまりを記録
+        self.auto_last_failed_index = None
 
         self.create_widgets()
 
@@ -96,7 +104,7 @@ class LogAnalyzerApp:
 
         # 実行ボタン
         action_frame = ttk.Frame(condition_frame)
-        action_frame.grid(row=0, column=7, rowspan=3, padx=(10, 0), sticky=tk.NS + tk.E)
+        action_frame.grid(row=0, column=7, rowspan=5, padx=(10, 0), sticky=tk.NS + tk.E)
 
         self.run_button = ttk.Button(
             action_frame,
@@ -176,6 +184,43 @@ class LogAnalyzerApp:
             variable=self.auto_save_csv
         ).grid(row=2, column=6, sticky=tk.W)
 
+        # 待ち時間と再試行
+        ttk.Label(condition_frame, text="待ち時間(秒):").grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        timeout_spin = ttk.Spinbox(
+            condition_frame,
+            from_=30,
+            to=86400,
+            textvariable=self.request_timeout,
+            width=8
+        )
+        timeout_spin.grid(row=3, column=1, padx=5, sticky=tk.W, pady=(5, 0))
+
+        ttk.Label(condition_frame, text="再試行回数:").grid(row=3, column=2, sticky=tk.W, pady=(5, 0))
+        retry_spin = ttk.Spinbox(
+            condition_frame,
+            from_=0,
+            to=20,
+            textvariable=self.retry_count,
+            width=6
+        )
+        retry_spin.grid(row=3, column=3, padx=5, sticky=tk.W, pady=(5, 0))
+
+        ttk.Label(condition_frame, text="開始まとまり:").grid(row=3, column=4, sticky=tk.W, pady=(5, 0))
+        start_spin = ttk.Spinbox(
+            condition_frame,
+            from_=1,
+            to=999999,
+            textvariable=self.auto_start_index,
+            width=8
+        )
+        start_spin.grid(row=3, column=5, padx=5, sticky=tk.W, pady=(5, 0))
+
+        ttk.Button(
+            condition_frame,
+            text="現在を開始に",
+            command=self.set_auto_start_from_current
+        ).grid(row=3, column=6, sticky=tk.W, pady=(5, 0))
+
         # 設定確認（1行）
         self.info_var = tk.StringVar(value="")
         info_label = ttk.Label(main_frame, textvariable=self.info_var)
@@ -186,7 +231,19 @@ class LogAnalyzerApp:
         self.status_label.pack(pady=(0, 5))
 
         # 変更時に自動更新
-        for var in (self.start_date, self.end_date, self.exclude_weekends, self.batch_size, self.model_name, self.send_mode, self.auto_save_csv, self.csv_mode):
+        for var in (
+            self.start_date,
+            self.end_date,
+            self.exclude_weekends,
+            self.batch_size,
+            self.model_name,
+            self.send_mode,
+            self.auto_save_csv,
+            self.csv_mode,
+            self.request_timeout,
+            self.retry_count,
+            self.auto_start_index,
+        ):
             var.trace_add("write", lambda *_: self.update_info())
         self.update_info()
 
@@ -371,9 +428,34 @@ class LogAnalyzerApp:
             f"モデル: {self.model_name.get()}  "
             f"送信方式: {'通常' if self.send_mode.get() == 'normal' else 'まとめ'}  "
             f"CSV既存: {'初期化' if self.csv_mode.get() == 'init' else '追記'}  "
-            f"CSV自動保存: {'ON' if self.auto_save_csv.get() else 'OFF'}"
+            f"CSV自動保存: {'ON' if self.auto_save_csv.get() else 'OFF'}  "
+            f"待ち時間: {self.request_timeout.get()}秒  "
+            f"再試行: {self.retry_count.get()}回  "
+            f"開始まとまり: {self.auto_start_index.get()}"
         )
         self.info_var.set(info)
+
+    def normalize_auto_start_index(self):
+        """開始まとまりを範囲内に丸める"""
+        total = len(self.batches)
+        if total <= 0:
+            if self.auto_start_index.get() != 1:
+                self.auto_start_index.set(1)
+            return 1
+        start_idx = int(self.auto_start_index.get())
+        start_idx = max(1, min(start_idx, total))
+        if start_idx != self.auto_start_index.get():
+            self.auto_start_index.set(start_idx)
+        return start_idx
+
+    def set_auto_start_from_current(self):
+        """現在表示しているまとまりを開始にする"""
+        if not self.batches:
+            self.auto_start_index.set(1)
+            return
+        self.auto_start_index.set(self.current_batch_index + 1)
+        self.normalize_auto_start_index()
+        self.update_info()
 
     def on_send_mode_changed(self):
         """送信方式の変更時処理"""
@@ -710,14 +792,15 @@ class LogAnalyzerApp:
         self.batch_responses_file = ""
         self.batch_job_var.set("バッチID: なし")
         self.csv_touched_dates = set()
-        self.csv_touched_dates = set()
+        self.auto_last_failed_index = None
         if not self.is_sending:
             if self.send_mode.get() == "batch":
                 self.ai_status_var.set("バッチ状態: 待機")
             else:
                 self.ai_status_var.set("送信状態: 待機")
         self.batches = self.build_batches(posts)
-        self.current_batch_index = 0
+        start_idx = self.normalize_auto_start_index()
+        self.current_batch_index = (start_idx - 1) if self.batches else 0
         self.update_batch_view()
 
     def build_batches(self, posts):
@@ -812,6 +895,9 @@ class LogAnalyzerApp:
         self.batch_job_name = ""
         self.batch_responses_file = ""
         self.batch_job_var.set("バッチID: なし")
+        self.csv_touched_dates = set()
+        self.auto_last_failed_index = None
+        self.auto_start_index.set(1)
         self.result_text.config(state=tk.NORMAL)
         self.result_text.delete(1.0, tk.END)
         self.result_text.config(state=tk.DISABLED)
@@ -821,6 +907,7 @@ class LogAnalyzerApp:
             else:
                 self.ai_status_var.set("送信状態: 待機")
         self.update_batch_buttons()
+        self.update_info()
 
     def copy_current_batch(self):
         """表示中のまとまりをコピー"""
@@ -913,6 +1000,7 @@ class LogAnalyzerApp:
         batch = self.batches[self.current_batch_index]
         batch_text = "\n".join(batch)
         full_text = f"{prompt_text}\n\n【投稿内容】\n{batch_text}"
+        timeout_seconds = max(30, int(self.request_timeout.get()))
 
         self.is_sending = True
         self.send_context = "single"
@@ -922,7 +1010,7 @@ class LogAnalyzerApp:
 
         thread = threading.Thread(
             target=self._send_to_gemini_thread,
-            args=(full_text, model, api_key)
+            args=(full_text, model, api_key, timeout_seconds)
         )
         thread.start()
 
@@ -992,20 +1080,34 @@ class LogAnalyzerApp:
             messagebox.showerror("エラー", "APIキーが見つかりません")
             return
 
+        total = len(self.batches)
+        start_idx = self.normalize_auto_start_index()
+        if start_idx > total:
+            start_idx = total
+            self.auto_start_index.set(start_idx)
+        if start_idx > 1 and self.auto_save_csv.get() and self.csv_mode.get() == "init":
+            messagebox.showwarning(
+                "注意",
+                "開始まとまりが2以上でCSV既存が初期化だと、途中までのCSVが消える可能性があります。追記を推奨します。"
+            )
+
         self.is_sending = True
         self.auto_run_active = True
         self.auto_stop_requested = False
         self.send_context = "auto"
         self.csv_touched_dates = set()
+        self.auto_last_failed_index = None
         self.ai_status_var.set("送信状態: 自動送信中")
-        self.status_label.config(text=f"自動送信: 0/{len(self.batches)}")
+        self.status_label.config(text=f"自動送信: {start_idx - 1}/{total}")
+        self.current_batch_index = start_idx - 1
+        self.update_batch_view()
         self.start_auto_timer()
         self.update_batch_buttons()
         self.update_run_buttons()
 
         thread = threading.Thread(
             target=self._auto_send_thread,
-            args=(prompt_text, model, api_key)
+            args=(prompt_text, model, api_key, start_idx)
         )
         thread.start()
 
@@ -1016,25 +1118,55 @@ class LogAnalyzerApp:
         self.auto_stop_requested = True
         self.status_label.config(text="自動送信: 停止要求を受け付けました")
 
-    def _auto_send_thread(self, prompt_text, model, api_key):
+    def _auto_send_thread(self, prompt_text, model, api_key, start_idx):
         """自動送信（バックグラウンド）"""
         total = len(self.batches)
         saved_rows_total = 0
         error_count_total = 0
+        timeout_seconds = max(30, int(self.request_timeout.get()))
+        retry_limit = max(0, int(self.retry_count.get()))
 
-        for idx, batch in enumerate(self.batches, start=1):
+        for idx in range(start_idx, total + 1):
             if self.auto_stop_requested:
                 break
 
+            batch = self.batches[idx - 1]
             self.root.after(0, lambda i=idx, t=total: self._show_auto_sending(i, t))
             self.root.after(0, self.start_request_timer)
             batch_text = "\n".join(batch)
             full_text = f"{prompt_text}\n\n【投稿内容】\n{batch_text}"
 
-            try:
-                result_text = self.call_gemini_api(full_text, model, api_key)
-            except Exception as e:
-                self.root.after(0, lambda: self._show_ai_error(str(e)))
+            last_error = None
+            result_text = ""
+            for attempt in range(1, retry_limit + 2):
+                if self.auto_stop_requested:
+                    break
+                if attempt > 1:
+                    self.root.after(
+                        0,
+                        lambda i=idx, t=total, a=attempt, r=retry_limit:
+                        self._show_auto_retry(i, t, a, r)
+                    )
+                    self.root.after(0, self.start_request_timer)
+                try:
+                    result_text = self.call_gemini_api(
+                        full_text,
+                        model,
+                        api_key,
+                        timeout_seconds
+                    )
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+
+            if self.auto_stop_requested:
+                break
+
+            if last_error is not None:
+                self.root.after(0, self.stop_request_timer)
+                self.root.after(0, lambda i=idx: self._update_auto_start_after_failure(i))
+                self.root.after(0, lambda: self._show_ai_error(str(last_error)))
                 return
 
             self.root.after(0, self.stop_request_timer)
@@ -1043,12 +1175,19 @@ class LogAnalyzerApp:
             saved_rows = 0
             if self.auto_save_csv.get():
                 try:
-                    _, saved_rows = self.append_rows_to_csv(rows, self.csv_mode.get(), self.csv_touched_dates)
+                    _, saved_rows = self.append_rows_to_csv(
+                        rows,
+                        self.csv_mode.get(),
+                        self.csv_touched_dates
+                    )
                     saved_rows_total += saved_rows
                 except Exception as e:
+                    self.root.after(0, lambda i=idx: self._update_auto_start_after_failure(i))
                     self.root.after(0, lambda: self._show_ai_error(str(e)))
                     return
 
+            next_start = min(idx + 1, total) if total > 0 else 1
+            self.root.after(0, lambda n=next_start: self._update_auto_start_after_success(n))
             self.root.after(
                 0,
                 lambda res=result_text, i=idx, t=total, saved=saved_rows_total, err=error_count_total:
@@ -1075,6 +1214,33 @@ class LogAnalyzerApp:
     def _show_auto_sending(self, index, total):
         """自動送信中の送信状態表示"""
         self.status_label.config(text=f"自動送信: {index}/{total} 送信中")
+
+    def _show_auto_retry(self, index, total, attempt, retry_limit):
+        """自動再試行の表示"""
+        self.status_label.config(
+            text=f"自動送信: {index}/{total} 再試行 {attempt}/{retry_limit + 1}"
+        )
+
+    def _update_auto_start_after_success(self, next_index):
+        """成功時に次の開始まとまりを更新"""
+        total = len(self.batches)
+        if total <= 0:
+            self.auto_start_index.set(1)
+        else:
+            next_index = max(1, min(int(next_index), total))
+            self.auto_start_index.set(next_index)
+        self.update_info()
+
+    def _update_auto_start_after_failure(self, failed_index):
+        """失敗時に再開位置を更新"""
+        total = len(self.batches)
+        if total > 0:
+            failed_index = max(1, min(int(failed_index), total))
+            self.auto_start_index.set(failed_index)
+        else:
+            self.auto_start_index.set(1)
+        self.auto_last_failed_index = failed_index
+        self.update_info()
 
     def _finish_auto_send(self):
         """自動送信の終了処理"""
@@ -1485,10 +1651,10 @@ class LogAnalyzerApp:
                 texts.append(part.get("text", ""))
         return "".join(texts).strip()
 
-    def _send_to_gemini_thread(self, full_text, model, api_key):
+    def _send_to_gemini_thread(self, full_text, model, api_key, timeout_seconds):
         """送信処理（バックグラウンド）"""
         try:
-            result_text = self.call_gemini_api(full_text, model, api_key)
+            result_text = self.call_gemini_api(full_text, model, api_key, timeout_seconds)
             self.root.after(0, lambda: self._show_ai_result(result_text))
         except Exception as e:
             self.root.after(0, lambda: self._show_ai_error(str(e)))
@@ -1722,7 +1888,7 @@ class LogAnalyzerApp:
                 continue
         return ""
 
-    def call_gemini_api(self, full_text, model, api_key):
+    def call_gemini_api(self, full_text, model, api_key, timeout_seconds=None):
         """Geminiに送信して結果を返す"""
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         payload = {
@@ -1739,8 +1905,9 @@ class LogAnalyzerApp:
             data=data,
             headers={"Content-Type": "application/json"}
         )
+        timeout = timeout_seconds if timeout_seconds is not None else max(30, int(self.request_timeout.get()))
         try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             try:
@@ -1748,6 +1915,9 @@ class LogAnalyzerApp:
             except OSError:
                 error_body = str(e)
             raise Exception(error_body) from e
+        except urllib.error.URLError as e:
+            reason = getattr(e, "reason", e)
+            raise Exception(f"待ち時間または通信で失敗しました（{timeout}秒）:\n{reason}") from e
         resp_json = json.loads(body)
         try:
             return resp_json["candidates"][0]["content"]["parts"][0]["text"]
