@@ -40,6 +40,11 @@ class LogAnalyzerApp:
         self.auto_run_active = False
         self.auto_stop_requested = False
         self.send_context = "single"
+        # 経過時間表示
+        self.request_timer_active = False
+        self.request_timer_start = None
+        self.request_timer_after_id = None
+        self.auto_run_start = None
         # バッチ情報
         self.batch_job_name = ""
         self.batch_responses_file = ""
@@ -89,7 +94,7 @@ class LogAnalyzerApp:
         # 実行ボタン
         self.run_button = ttk.Button(
             condition_frame,
-            text="解析実行",
+            text="抽出実行",
             command=self.run_analysis
         )
         self.run_button.grid(row=0, column=6, rowspan=3, padx=(10, 0), sticky=tk.NS)
@@ -239,6 +244,14 @@ class LogAnalyzerApp:
         self.ai_status_label = ttk.Label(ai_header_top, textvariable=self.ai_status_var)
         self.ai_status_label.pack(side=tk.LEFT)
 
+        self.request_time_var = tk.StringVar(value="応答待ち: --")
+        self.request_time_label = ttk.Label(ai_header_top, textvariable=self.request_time_var)
+        self.request_time_label.pack(side=tk.LEFT, padx=10)
+
+        self.auto_total_time_var = tk.StringVar(value="一括所要時間: --")
+        self.auto_total_time_label = ttk.Label(ai_header_top, textvariable=self.auto_total_time_var)
+        self.auto_total_time_label.pack(side=tk.LEFT, padx=10)
+
         self.batch_job_var = tk.StringVar(value="バッチID: なし")
         self.batch_job_label = ttk.Label(ai_header_top, textvariable=self.batch_job_var)
         self.batch_job_label.pack(side=tk.RIGHT)
@@ -275,7 +288,7 @@ class LogAnalyzerApp:
         """カレンダーダイアログを表示"""
         top = tk.Toplevel(self.root)
         top.title("日付選択")
-        top.geometry("250x200")
+        top.geometry("260x230")
         top.transient(self.root)
         top.grab_set()
 
@@ -297,39 +310,43 @@ class LogAnalyzerApp:
         cal_frame = ttk.Frame(top)
         cal_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # 曜日ヘッダー
-        days = ["日", "月", "火", "水", "木", "金", "土"]
-        for i, day in enumerate(days):
-            lbl = ttk.Label(cal_frame, text=day, width=4)
-            lbl.grid(row=0, column=i)
-
         # 日付ボタン
         def select_date(d):
             date_var.set(f"{year_var.get()}-{month_var.get():02d}-{d:02d}")
             top.destroy()
             self.update_info()
 
-        buttons = []
-        for week_num, week in enumerate(calendar.monthcalendar(year_var.get(), month_var.get()), start=1):
-            for day_num, day in enumerate(week):
-                if day == 0:
-                    lbl = ttk.Label(cal_frame, text="", width=4)
-                    lbl.grid(row=week_num, column=day_num)
-                else:
-                    btn = ttk.Button(
-                        cal_frame,
-                        text=str(day),
-                        width=4,
-                        command=lambda d=day: select_date(d)
-                    )
-                    btn.grid(row=week_num, column=day_num)
-                    buttons.append(btn)
-
-        # 月変更でカレンダーを更新
-        def refresh_calendar(*args):
+        def render_calendar():
             for widget in cal_frame.winfo_children():
                 widget.destroy()
-            # ...（再描画処理は省略して簡略化）
+
+            # 曜日ヘッダー
+            days = ["日", "月", "火", "水", "木", "金", "土"]
+            for i, day in enumerate(days):
+                lbl = ttk.Label(cal_frame, text=day, width=4)
+                lbl.grid(row=0, column=i)
+
+            # 日付ボタン
+            for week_num, week in enumerate(calendar.monthcalendar(year_var.get(), month_var.get()), start=1):
+                for day_num, day in enumerate(week):
+                    if day == 0:
+                        lbl = ttk.Label(cal_frame, text="", width=4)
+                        lbl.grid(row=week_num, column=day_num)
+                    else:
+                        btn = ttk.Button(
+                            cal_frame,
+                            text=str(day),
+                            width=4,
+                            command=lambda d=day: select_date(d)
+                        )
+                        btn.grid(row=week_num, column=day_num)
+
+        def refresh_calendar(*args):
+            render_calendar()
+
+        year_var.trace_add("write", refresh_calendar)
+        month_var.trace_add("write", refresh_calendar)
+        render_calendar()
 
     def update_info(self):
         """設定確認エリアを更新"""
@@ -352,7 +369,51 @@ class LogAnalyzerApp:
                 self.ai_status_var.set("バッチ状態: 待機")
             else:
                 self.ai_status_var.set("送信状態: 待機")
+        if not self.auto_run_active:
+            self.auto_total_time_var.set("一括所要時間: --")
         self.update_batch_buttons()
+
+    def start_request_timer(self):
+        """応答待ちの時間計測を開始"""
+        self.stop_request_timer(set_waiting=False)
+        self.request_timer_active = True
+        self.request_timer_start = datetime.now()
+        self.request_time_var.set("応答待ち: 00:00")
+        self._update_request_timer()
+
+    def stop_request_timer(self, set_waiting=True):
+        """応答待ちの時間計測を停止"""
+        if self.request_timer_after_id:
+            try:
+                self.root.after_cancel(self.request_timer_after_id)
+            except Exception:
+                pass
+        self.request_timer_after_id = None
+        if self.request_timer_start and self.request_timer_active:
+            elapsed = datetime.now() - self.request_timer_start
+            self.request_time_var.set(f"応答時間: {self.format_elapsed(elapsed)}")
+        elif set_waiting:
+            self.request_time_var.set("応答待ち: --")
+        self.request_timer_active = False
+        self.request_timer_start = None
+
+    def _update_request_timer(self):
+        """応答待ちの経過表示を更新"""
+        if not self.request_timer_active or not self.request_timer_start:
+            return
+        elapsed = datetime.now() - self.request_timer_start
+        self.request_time_var.set(f"応答待ち: {self.format_elapsed(elapsed)}")
+        self.request_timer_after_id = self.root.after(200, self._update_request_timer)
+
+    def format_elapsed(self, elapsed):
+        """経過時間を文字列化"""
+        total_seconds = int(elapsed.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
 
     def run_analysis(self):
         """解析実行"""
@@ -794,6 +855,7 @@ class LogAnalyzerApp:
         self.send_context = "single"
         self.ai_status_var.set("送信状態: 送信中")
         self.update_batch_buttons()
+        self.start_request_timer()
 
         thread = threading.Thread(
             target=self._send_to_gemini_thread,
@@ -832,6 +894,7 @@ class LogAnalyzerApp:
         self.send_context = "batch"
         self.ai_status_var.set("バッチ状態: 送信中")
         self.update_batch_buttons()
+        self.start_request_timer()
 
         thread = threading.Thread(
             target=self._send_batch_thread,
@@ -873,6 +936,8 @@ class LogAnalyzerApp:
         self.csv_touched_dates = set()
         self.ai_status_var.set("送信状態: 自動送信中")
         self.status_label.config(text=f"自動送信: 0/{len(self.batches)}")
+        self.auto_run_start = datetime.now()
+        self.auto_total_time_var.set("一括所要時間: 計測中")
         self.update_batch_buttons()
 
         thread = threading.Thread(
@@ -898,6 +963,8 @@ class LogAnalyzerApp:
             if self.auto_stop_requested:
                 break
 
+            self.root.after(0, lambda i=idx, t=total: self._show_auto_batch(i, t))
+            self.root.after(0, self.start_request_timer)
             batch_text = "\n".join(batch)
             full_text = f"{prompt_text}\n\n【投稿内容】\n{batch_text}"
 
@@ -907,6 +974,7 @@ class LogAnalyzerApp:
                 self.root.after(0, lambda: self._show_ai_error(str(e)))
                 return
 
+            self.root.after(0, self.stop_request_timer)
             rows, error_count = self.parse_ai_output(result_text)
             error_count_total += error_count
             saved_rows = 0
@@ -938,12 +1006,29 @@ class LogAnalyzerApp:
             message += f"  読み取り不可: {error_rows}行"
         self.status_label.config(text=message)
 
+    def _show_auto_batch(self, index, total):
+        """自動送信中のまとまり表示"""
+        self.current_batch_index = index - 1
+        self.update_batch_view()
+        self.status_label.config(text=f"自動送信: {index}/{total} 送信中")
+
     def _finish_auto_send(self):
         """自動送信の終了処理"""
         stopped = self.auto_stop_requested
         self.auto_run_active = False
         self.auto_stop_requested = False
         self.is_sending = False
+
+        if self.auto_run_start:
+            elapsed = datetime.now() - self.auto_run_start
+            text = self.format_elapsed(elapsed)
+            if stopped:
+                self.auto_total_time_var.set(f"一括所要時間: 停止（{text}）")
+            else:
+                self.auto_total_time_var.set(f"一括所要時間: {text}")
+            self.auto_run_start = None
+        else:
+            self.auto_total_time_var.set("一括所要時間: --")
 
         if stopped:
             self.ai_status_var.set("送信状態: 停止")
@@ -1084,6 +1169,7 @@ class LogAnalyzerApp:
 
         if self.auto_save_csv.get() and self.send_context != "single":
             self.save_ai_result_to_csv(show_message=False)
+        self.stop_request_timer()
         self.update_batch_buttons()
 
     def create_batch_jsonl(self, prompt_text):
@@ -1346,6 +1432,7 @@ class LogAnalyzerApp:
         label = "バッチ状態" if self.send_mode.get() == "batch" else "送信状態"
         self.ai_status_var.set(f"{label}: 完了")
         self.update_batch_buttons()
+        self.stop_request_timer()
 
         self.ai_result_text.config(state=tk.NORMAL)
         self.ai_result_text.delete(1.0, tk.END)
@@ -1357,6 +1444,7 @@ class LogAnalyzerApp:
         self.is_sending = False
         self.auto_run_active = False
         self.auto_stop_requested = False
+        self.stop_request_timer()
         label = "バッチ状態" if self.send_mode.get() == "batch" else "送信状態"
         self.ai_status_var.set(f"{label}: エラー")
         self.update_batch_buttons()
