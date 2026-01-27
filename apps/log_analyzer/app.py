@@ -47,6 +47,7 @@ class LogAnalyzerApp:
         self.request_timer_start = None
         self.request_timer_after_id = None
         self.auto_run_start = None
+        self.auto_timer_after_id = None
         # バッチ情報
         self.batch_job_name = ""
         self.batch_responses_file = ""
@@ -383,6 +384,7 @@ class LogAnalyzerApp:
                 self.ai_status_var.set("送信状態: 待機")
         if not self.auto_run_active:
             self.auto_total_time_var.set("一括所要時間: --")
+            self.stop_auto_timer(reset=True)
         self.update_batch_buttons()
 
     def start_request_timer(self):
@@ -416,6 +418,32 @@ class LogAnalyzerApp:
         elapsed = datetime.now() - self.request_timer_start
         self.request_time_var.set(f"応答待ち: {self.format_elapsed(elapsed)}")
         self.request_timer_after_id = self.root.after(200, self._update_request_timer)
+
+    def start_auto_timer(self):
+        """一括送信の経過時間を開始"""
+        self.stop_auto_timer(reset=False)
+        self.auto_run_start = datetime.now()
+        self.auto_total_time_var.set("一括所要時間: 00:00")
+        self._update_auto_timer()
+
+    def stop_auto_timer(self, reset=True):
+        """一括送信の経過時間を停止"""
+        if self.auto_timer_after_id:
+            try:
+                self.root.after_cancel(self.auto_timer_after_id)
+            except Exception:
+                pass
+        self.auto_timer_after_id = None
+        if reset:
+            self.auto_total_time_var.set("一括所要時間: --")
+
+    def _update_auto_timer(self):
+        """一括送信の経過表示を更新"""
+        if not self.auto_run_active or not self.auto_run_start:
+            return
+        elapsed = datetime.now() - self.auto_run_start
+        self.auto_total_time_var.set(f"一括所要時間: {self.format_elapsed(elapsed)}")
+        self.auto_timer_after_id = self.root.after(500, self._update_auto_timer)
 
     def format_elapsed(self, elapsed):
         """経過時間を文字列化"""
@@ -971,8 +999,7 @@ class LogAnalyzerApp:
         self.csv_touched_dates = set()
         self.ai_status_var.set("送信状態: 自動送信中")
         self.status_label.config(text=f"自動送信: 0/{len(self.batches)}")
-        self.auto_run_start = datetime.now()
-        self.auto_total_time_var.set("一括所要時間: 計測中")
+        self.start_auto_timer()
         self.update_batch_buttons()
         self.update_run_buttons()
 
@@ -1062,7 +1089,8 @@ class LogAnalyzerApp:
                 self.auto_total_time_var.set(f"一括所要時間: 停止（{text}）")
             else:
                 self.auto_total_time_var.set(f"一括所要時間: {text}")
-            self.auto_run_start = None
+        elif stopped:
+            self.auto_total_time_var.set("一括所要時間: 停止")
         else:
             self.auto_total_time_var.set("一括所要時間: --")
 
@@ -1070,6 +1098,7 @@ class LogAnalyzerApp:
             self.ai_status_var.set("送信状態: 停止")
         else:
             self.ai_status_var.set("送信状態: 完了")
+        self.stop_auto_timer(reset=False)
         self.update_batch_buttons()
         self.update_run_buttons()
 
@@ -1482,6 +1511,7 @@ class LogAnalyzerApp:
         self.auto_run_active = False
         self.auto_stop_requested = False
         self.stop_request_timer()
+        self.stop_auto_timer(reset=False)
         label = "バッチ状態" if self.send_mode.get() == "batch" else "送信状態"
         self.ai_status_var.set(f"{label}: エラー")
         self.update_batch_buttons()
