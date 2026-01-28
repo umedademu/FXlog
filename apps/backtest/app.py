@@ -17,6 +17,7 @@ DATETIME_FORMATS = (
     "%Y-%m-%d %H:%M",
     "%Y/%m/%d %H:%M",
     "%Y.%m.%d %H:%M",
+    "%y.%m.%d %H:%M",
 )
 DATE_FORMATS = (
     "%Y-%m-%d",
@@ -49,18 +50,18 @@ PIP_SIZE = 0.01
 EQUITY_POINT_RADIUS = 3
 
 REASON_ITEMS = (
-    ("is_entry", "新規"),
-    ("is_entry_plan", "新規予定"),
-    ("is_boast", "自慢"),
-    ("is_fear", "恐怖"),
-    ("is_fear_plan", "恐怖予定"),
-    ("is_greed", "欲望"),
-    ("is_stop", "損切"),
-    ("is_stop_plan", "損切予定"),
-    ("is_lc", "ロスカ"),
-    ("is_lc_plan", "ロスカ予定"),
-    ("is_tp", "利確"),
-    ("is_tp_plan", "利確予定"),
+    ("entry", "新規"),
+    ("entry_plan", "新規予定"),
+    ("boast", "自慢"),
+    ("fear", "恐怖"),
+    ("fear_plan", "恐怖予定"),
+    ("greed", "欲望"),
+    ("stop", "損切"),
+    ("stop_plan", "損切予定"),
+    ("lc", "ロスカ"),
+    ("lc_plan", "ロスカ予定"),
+    ("tp", "利確"),
+    ("tp_plan", "利確予定"),
 )
 REASON_LABELS = dict(REASON_ITEMS)
 
@@ -111,12 +112,74 @@ def parse_flag(value):
     return text in ("1", "true", "yes", "y")
 
 
+def parse_reason_to_tags(reason_text):
+    """reason列（縦線区切りの理由文字列）をtagsディクショナリに変換"""
+    if not reason_text:
+        return {
+            "entry": False,
+            "entry_plan": False,
+            "boast": False,
+            "fear": False,
+            "fear_plan": False,
+            "greed": False,
+            "stop": False,
+            "stop_plan": False,
+            "lc": False,
+            "lc_plan": False,
+            "tp": False,
+            "tp_plan": False,
+        }
+    tags = {
+        "entry": False,
+        "entry_plan": False,
+        "boast": False,
+        "fear": False,
+        "fear_plan": False,
+        "greed": False,
+        "stop": False,
+        "stop_plan": False,
+        "lc": False,
+        "lc_plan": False,
+        "tp": False,
+        "tp_plan": False,
+    }
+    reasons = [r.strip() for r in str(reason_text).split("|") if r.strip()]
+    for reason in reasons:
+        if reason == "entry":
+            tags["entry"] = True
+        elif reason == "entry_plan":
+            tags["entry_plan"] = True
+        elif reason == "boast":
+            tags["boast"] = True
+        elif reason == "fear":
+            tags["fear"] = True
+        elif reason == "fear_plan":
+            tags["fear_plan"] = True
+        elif reason == "greed":
+            tags["greed"] = True
+        elif reason == "stop":
+            tags["stop"] = True
+        elif reason == "stop_plan":
+            tags["stop_plan"] = True
+        elif reason == "lc":
+            tags["lc"] = True
+        elif reason == "lc_plan":
+            tags["lc_plan"] = True
+        elif reason == "tp":
+            tags["tp"] = True
+        elif reason == "tp_plan":
+            tags["tp_plan"] = True
+    return tags
+
+
 def normalize_entry_type(text):
     if not text:
         return "INSTANT"
     cleaned = str(text).strip().upper()
-    if cleaned == "LIMIT":
+    if cleaned in ("LIMIT", "L"):
         return "LIMIT"
+    if cleaned in ("INSTANT", "I"):
+        return "INSTANT"
     return "INSTANT"
 
 
@@ -124,7 +187,7 @@ def normalize_action(text):
     if not text:
         return None
     cleaned = text.strip().upper()
-    if cleaned in ("BUY", "LONG", "L"):
+    if cleaned in ("BUY", "LONG", "B"):
         return "BUY"
     if cleaned in ("SELL", "SHORT", "S"):
         return "SELL"
@@ -164,6 +227,12 @@ def load_signals(csv_dir):
                 reader = csv.DictReader(f)
                 if not reader.fieldnames:
                     continue
+
+                # 新フォーマットか旧フォーマットかを判定
+                # 新フォーマット: datetime,side,entry_type,entry_price,reason
+                # 旧フォーマット: datetime,symbol,side,entry_type,entry_price,is_entry,...
+                is_new_format = "reason" in reader.fieldnames
+
                 for row in reader:
                     dt_text = row.get("datetime") or row.get("time") or row.get("日時")
                     action = row.get("action") or row.get("side") or row.get("売買")
@@ -175,29 +244,39 @@ def load_signals(csv_dir):
                             entry_price = float(entry_price_text)
                         except ValueError:
                             entry_price = None
-                    symbol = row.get("symbol") or row.get("通貨")
-                    if symbol and symbol.strip().upper() != "USDJPY":
-                        continue
+
+                    # 旧フォーマットのみsymbolをチェック
+                    if not is_new_format:
+                        symbol = row.get("symbol") or row.get("通貨")
+                        if symbol and symbol.strip().upper() != "USDJPY":
+                            continue
+
                     dt_jst = parse_signal_datetime(dt_text)
                     if not dt_jst:
                         continue
                     action_norm = normalize_action(action)
                     if not action_norm:
                         continue
-                    tags = {
-                        "is_entry": parse_flag(row.get("is_entry")),
-                        "is_entry_plan": parse_flag(row.get("is_entry_plan")),
-                        "is_boast": parse_flag(row.get("is_boast")),
-                        "is_fear": parse_flag(row.get("is_fear")),
-                        "is_fear_plan": parse_flag(row.get("is_fear_plan")),
-                        "is_greed": parse_flag(row.get("is_greed")),
-                        "is_stop": parse_flag(row.get("is_stop")),
-                        "is_stop_plan": parse_flag(row.get("is_stop_plan")),
-                        "is_lc": parse_flag(row.get("is_lc")),
-                        "is_lc_plan": parse_flag(row.get("is_lc_plan")),
-                        "is_tp": parse_flag(row.get("is_tp")),
-                        "is_tp_plan": parse_flag(row.get("is_tp_plan")),
-                    }
+
+                    # フォーマットに応じてtagsを生成
+                    if is_new_format:
+                        tags = parse_reason_to_tags(row.get("reason"))
+                    else:
+                        # 旧フォーマット: is_付きのカラム名 → is_なしのキーに変換
+                        tags = {
+                            "entry": parse_flag(row.get("is_entry")),
+                            "entry_plan": parse_flag(row.get("is_entry_plan")),
+                            "boast": parse_flag(row.get("is_boast")),
+                            "fear": parse_flag(row.get("is_fear")),
+                            "fear_plan": parse_flag(row.get("is_fear_plan")),
+                            "greed": parse_flag(row.get("is_greed")),
+                            "stop": parse_flag(row.get("is_stop")),
+                            "stop_plan": parse_flag(row.get("is_stop_plan")),
+                            "lc": parse_flag(row.get("is_lc")),
+                            "lc_plan": parse_flag(row.get("is_lc_plan")),
+                            "tp": parse_flag(row.get("is_tp")),
+                            "tp_plan": parse_flag(row.get("is_tp_plan")),
+                        }
                     signals.append(
                         {
                             "time_jst": dt_jst,
@@ -312,25 +391,60 @@ def load_ohlc_range(data_dir, start_utc, end_utc):
             continue
         try:
             with open(path, "r", encoding="utf-8", newline="") as f:
-                reader = csv.DictReader(f, delimiter="\t")
+                # 最初の行を読んでフォーマットを判定
+                first_line = f.readline()
+                f.seek(0)
+
+                # デリミタを判定（カンマかタブ）
+                if "," in first_line:
+                    delimiter = ","
+                else:
+                    delimiter = "\t"
+
+                reader = csv.DictReader(f, delimiter=delimiter)
+                if not reader.fieldnames:
+                    continue
+
+                # 新フォーマットか旧フォーマットかを判定
+                # 新フォーマット: "Local time"列がある
+                # 旧フォーマット: "time"または"Time"列がある
+                is_new_format = "Local time" in reader.fieldnames
+
                 for row in reader:
-                    time_text = row.get("time") or row.get("Time")
-                    if not time_text:
-                        continue
-                    try:
-                        bar_time = datetime.strptime(time_text.strip(), "%Y.%m.%d %H:%M")
-                    except ValueError:
-                        continue
+                    if is_new_format:
+                        time_text = row.get("Local time")
+                        if not time_text:
+                            continue
+                        # "01.01.2026 00:00:00.000 GMT+0900" 形式をパース
+                        # "GMT+0900"部分を削除してからパース
+                        time_text_clean = time_text.split("GMT")[0].strip()
+                        try:
+                            bar_time = datetime.strptime(time_text_clean, "%d.%m.%Y %H:%M:%S.%f")
+                        except ValueError:
+                            continue
+                        # JSTとして扱う（データがGMT+0900と明記されているため）
+                        # UTCに変換
+                        bar_time = bar_time - JST_OFFSET
+                    else:
+                        time_text = row.get("time") or row.get("Time")
+                        if not time_text:
+                            continue
+                        try:
+                            bar_time = datetime.strptime(time_text.strip(), "%Y.%m.%d %H:%M")
+                        except ValueError:
+                            continue
+                        # 旧フォーマットはUTCとして扱う
+
                     if bar_time < start_utc or bar_time > end_utc:
                         continue
                     try:
                         bars.append(
                             {
                                 "time": bar_time,
-                                "open": float(row.get("open") or 0),
-                                "high": float(row.get("high") or 0),
-                                "low": float(row.get("low") or 0),
-                                "close": float(row.get("close") or 0),
+                                "open": float(row.get("Open") or row.get("open") or 0),
+                                "high": float(row.get("High") or row.get("high") or 0),
+                                "low": float(row.get("Low") or row.get("low") or 0),
+                                "close": float(row.get("Close") or row.get("close") or 0),
                             }
                         )
                     except ValueError:
@@ -861,29 +975,29 @@ class BacktestApp:
     def selected_tag_keys(self):
         selected = []
         if self.filter_entry_var.get():
-            selected.append("is_entry")
+            selected.append("entry")
         if self.filter_entry_plan_var.get():
-            selected.append("is_entry_plan")
+            selected.append("entry_plan")
         if self.filter_boast_var.get():
-            selected.append("is_boast")
+            selected.append("boast")
         if self.filter_fear_var.get():
-            selected.append("is_fear")
+            selected.append("fear")
         if self.filter_fear_plan_var.get():
-            selected.append("is_fear_plan")
+            selected.append("fear_plan")
         if self.filter_greed_var.get():
-            selected.append("is_greed")
+            selected.append("greed")
         if self.filter_stop_var.get():
-            selected.append("is_stop")
+            selected.append("stop")
         if self.filter_stop_plan_var.get():
-            selected.append("is_stop_plan")
+            selected.append("stop_plan")
         if self.filter_lc_var.get():
-            selected.append("is_lc")
+            selected.append("lc")
         if self.filter_lc_plan_var.get():
-            selected.append("is_lc_plan")
+            selected.append("lc_plan")
         if self.filter_tp_var.get():
-            selected.append("is_tp")
+            selected.append("tp")
         if self.filter_tp_plan_var.get():
-            selected.append("is_tp_plan")
+            selected.append("tp_plan")
         return selected
 
     def filter_signals_by_tags(self, signals):
@@ -1691,7 +1805,7 @@ class BacktestApp:
                 if base_price is None:
                     limit_missing += 1
                     continue
-                use_plan_offset = bool(tags.get("is_entry_plan") or tags.get("is_tp_plan"))
+                use_plan_offset = bool(tags.get("entry_plan") or tags.get("tp_plan"))
                 if direction == "BUY":
                     limit_price = base_price + limit_offset if use_plan_offset else base_price - limit_offset
                 else:
